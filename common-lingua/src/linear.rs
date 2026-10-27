@@ -58,14 +58,14 @@ impl Linear {
 }
 
 pub fn block_weights(w: &[f32], n: usize, k: usize) -> Vec<f32> {
-    let tiles = (n + 15) / 16;
+    let tiles = n.div_ceil(16);
     let mut out = vec![0.0f32; tiles * k * 16];
     block_rows_into(w, k, n, k, &mut out);
     out
 }
 
 pub fn block_rows_into(src: &[f32], stride: usize, n: usize, k: usize, dst: &mut [f32]) {
-    let tiles = (n + 15) / 16;
+    let tiles = n.div_ceil(16);
     for jt in 0..tiles {
         let j0 = jt * 16;
         for t in 0..16 {
@@ -81,6 +81,7 @@ pub fn block_rows_into(src: &[f32], stride: usize, n: usize, k: usize, dst: &mut
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn gemm(
     a: &[f32],
     a_stride: usize,
@@ -94,7 +95,7 @@ pub fn gemm(
     accumulate: bool,
 ) {
     debug_assert!(m == 0 || a.len() >= (m - 1) * a_stride + k);
-    debug_assert!(b.len() >= ((n + 15) / 16) * k * 16);
+    debug_assert!(b.len() >= n.div_ceil(16) * k * 16);
     debug_assert!(m == 0 || out.len() >= (m - 1) * out_stride + n);
 
     gemm_core(
@@ -111,6 +112,7 @@ pub fn gemm(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gemm_core(
     a: *const f32,
     a_stride: usize,
@@ -133,28 +135,28 @@ fn gemm_core(
             for i in 0..m {
                 let mut acc = [0.0f32; 16];
                 if has_bias {
-                    for t in 0..16 {
-                        acc[t] = *bias.add(j + t);
+                    for (t, a) in acc.iter_mut().enumerate() {
+                        *a = *bias.add(j + t);
                     }
                 }
                 let mut ap = a.add(i * a_stride);
                 let mut bp = bj;
                 for _ in 0..k {
                     let x = *ap;
-                    for t in 0..16 {
-                        acc[t] = x.mul_add(*bp.add(t), acc[t]);
+                    for (t, a) in acc.iter_mut().enumerate() {
+                        *a = x.mul_add(*bp.add(t), *a);
                     }
                     ap = ap.add(1);
                     bp = bp.add(16);
                 }
                 let orow = out.add(i * out_stride + j);
                 if accumulate {
-                    for t in 0..16 {
-                        *orow.add(t) = *orow.add(t) + acc[t];
+                    for (t, a) in acc.iter().enumerate() {
+                        *orow.add(t) = *orow.add(t) + a;
                     }
                 } else {
-                    for t in 0..16 {
-                        *orow.add(t) = acc[t];
+                    for (t, a) in acc.iter().enumerate() {
+                        *orow.add(t) = *a;
                     }
                 }
             }

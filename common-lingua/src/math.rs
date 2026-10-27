@@ -1,9 +1,10 @@
-pub fn fast_exp(x: f32) -> f32 {
-    const LOG2E: f32 = 1.442_695_040_888_963_4;
-    const LN2_HI: f32 = 0.693_145_751_953_125;
-    const LN2_LO: f32 = 1.428_606_765_330_187e-6;
-    const MAGIC: f32 = 12_582_912.0;
+static LOG2E: f32 = 1.0 / std::f32::consts::LN_2;
 
+static LN2_HI: f32 = f32::from_bits(std::f32::consts::LN_2.to_bits() & !0x1F);
+static LN2_LO: f32 = std::f32::consts::LN_2 - LN2_HI;
+static MAGIC: f32 = 12_582_912.0;
+
+pub fn fast_exp(x: f32) -> f32 {
     let z = x * LOG2E;
     let n = (z + MAGIC) - MAGIC;
     let r = x - n * LN2_HI - n * LN2_LO;
@@ -22,7 +23,7 @@ pub fn fast_exp(x: f32) -> f32 {
     p * scale
 }
 
-pub fn silu(x: f32) -> f32 {
+fn silu(x: f32) -> f32 {
     x / (1.0 + fast_exp(-x))
 }
 
@@ -72,6 +73,7 @@ pub fn softmax_rows(data: &mut [f32], n: usize) {
     }
 }
 
+static LN_EPS: f32 = 1e-5;
 pub fn layer_norm_into(
     src: &[f32],
     dst: &mut [f32],
@@ -80,7 +82,6 @@ pub fn layer_norm_into(
     weight: &[f32],
     bias: &[f32],
 ) {
-    const EPS: f32 = 1e-5;
     for r in 0..rows {
         let base = r * n;
         let row = &src[base..base + n];
@@ -98,7 +99,7 @@ pub fn layer_norm_into(
             var = diff.mul_add(diff, var);
         }
         var /= n as f32;
-        let inv = 1.0 / (var + EPS).sqrt();
+        let inv = 1.0 / (var + LN_EPS).sqrt();
 
         for i in 0..n {
             out[i] = (row[i] - mean).mul_add(inv * weight[i], bias[i]);

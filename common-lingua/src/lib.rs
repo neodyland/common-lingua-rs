@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 mod linear;
 mod math;
-use linear::{block_rows_into, gemm, Linear, NoBiasLinear};
+use linear::{Linear, NoBiasLinear, block_rows_into, gemm};
 use math::{gelu, layer_norm_into, silu_inplace, softmax, softmax_rows, swiglu_inplace};
 mod weights;
 use weights::load_weight;
@@ -60,7 +60,7 @@ impl Rope {
     fn load() -> Self {
         let mut cos = vec![0.0f32; MAX_LEN * HALF];
         let mut sin = vec![0.0f32; MAX_LEN * HALF];
-        let mut inv_freq = vec![0.0f32; HALF];
+        let mut inv_freq = [0.0f32; HALF];
         for (i, freq) in inv_freq.iter_mut().enumerate() {
             *freq = 1.0f32 / 10000.0f32.powf((2 * i) as f32 / HEAD_DIM as f32);
         }
@@ -145,7 +145,7 @@ impl Ffn {
         let n = shape[0];
         let k = shape[1];
         let stride = 2 * n;
-        let tiles = (stride + 15) / 16;
+        let tiles = stride.div_ceil(16);
         let mut weight_b = vec![0.0f32; tiles * k * 16];
         for jt in 0..tiles {
             let j0 = jt * 16;
@@ -177,13 +177,7 @@ impl Ffn {
         self.forward_ranges(x, h, buf, &[(0, rows)]);
     }
 
-    fn forward_ranges(
-        &self,
-        x: &mut [f32],
-        h: &[f32],
-        buf: &mut [f32],
-        ranges: &[(usize, usize)],
-    ) {
+    fn forward_ranges(&self, x: &mut [f32], h: &[f32], buf: &mut [f32], ranges: &[(usize, usize)]) {
         let n = self.upgate.out;
         for &(start, end) in ranges {
             let len = end - start;
@@ -280,8 +274,7 @@ impl ConvLayer {
         if r + 1 >= 496 {
             self.norm1.forward(x, h, MAX_LEN);
         } else {
-            self.norm1
-                .forward_rows(x, h, &[(0, r + 1), (496, MAX_LEN)]);
+            self.norm1.forward_rows(x, h, &[(0, r + 1), (496, MAX_LEN)]);
         }
 
         let mut row = [0.0f32; D];
@@ -305,8 +298,7 @@ impl ConvLayer {
             self.ffn.forward(x, h, buf, MAX_LEN);
             return 510;
         }
-        self.norm2
-            .forward_rows(x, h, &[(0, r + 1), (510, MAX_LEN)]);
+        self.norm2.forward_rows(x, h, &[(0, r + 1), (510, MAX_LEN)]);
         self.ffn
             .forward_ranges(x, h, buf, &[(0, r + 1), (510, MAX_LEN)]);
         row.copy_from_slice(&x[r * D..r * D + D]);
@@ -335,7 +327,7 @@ impl AttnLayer {
             ffn: Ffn::load(prefix),
         }
     }
-
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &self,
         x: &mut [f32],
@@ -354,8 +346,7 @@ impl AttnLayer {
         if cut >= 510 {
             self.norm1.forward(x, h, MAX_LEN);
         } else {
-            self.norm1
-                .forward_rows(x, h, &[(0, cut), (510, MAX_LEN)]);
+            self.norm1.forward_rows(x, h, &[(0, cut), (510, MAX_LEN)]);
         }
         if cut >= 510 {
             gemm(
@@ -428,8 +419,7 @@ impl AttnLayer {
                 let j0 = jt * 16;
                 for s in 0..MAX_LEN {
                     let src = &qkv[s * 3 * D + voff + j0..s * 3 * D + voff + j0 + 16];
-                    vb[(jt * MAX_LEN + s) * 16..(jt * MAX_LEN + s) * 16 + 16]
-                        .copy_from_slice(src);
+                    vb[(jt * MAX_LEN + s) * 16..(jt * MAX_LEN + s) * 16 + 16].copy_from_slice(src);
                 }
             }
 
@@ -660,8 +650,8 @@ impl Model {
 
         let mut count = 0usize;
         s.pooled.fill(0.0);
-        for pos in 0..MAX_LEN {
-            if byte_ids[pos] != PAD {
+        for (pos, byte_id) in byte_ids.iter().enumerate().take(MAX_LEN) {
+            if *byte_id != PAD {
                 count += 1;
                 let row = &s.h[pos * D..pos * D + D];
                 for (p, value) in s.pooled.iter_mut().zip(row.iter()) {
