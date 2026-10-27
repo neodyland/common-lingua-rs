@@ -189,11 +189,12 @@ jobs:
       contents: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
       - name: Get short SHA
         id: get_hash
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
       - name: Create prerelease
         uses: softprops/action-gh-release@v3
         with:
