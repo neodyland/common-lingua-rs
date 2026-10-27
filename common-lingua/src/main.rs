@@ -13,14 +13,16 @@ fn main() {
         let mut order: Vec<usize> = (0..probs.len()).collect();
         order.sort_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
         let preview: String = text.chars().take(80).collect::<String>().replace('\n', " ");
-        let others = order[1..3]
+        let top = order[0];
+        let others: f32 = probs
             .iter()
-            .map(|&i| format!("{}={:.3}", LANGS[i], probs[i]))
-            .collect::<Vec<String>>()
-            .join(" ");
+            .enumerate()
+            .filter(|(i, _)| *i != top)
+            .map(|(_, p)| *p)
+            .sum();
         println!(
-            "{}\t{:.4}\t{}\t{}",
-            LANGS[order[0]], probs[order[0]], others, preview
+            "{}\t{:.4}\t{:.3} others\t{}",
+            LANGS[top], probs[top], others, preview
         );
     }
 }
