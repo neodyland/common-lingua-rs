@@ -11,4 +11,4 @@ categories.workspace = true
 
 
 [dependencies]
-common-lingua-macros = { path = "../common-lingua-macros" }
+common-lingua-macros = { path = "../common-lingua-macros" , version = "0.1.0" }

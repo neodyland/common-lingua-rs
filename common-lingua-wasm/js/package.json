@@ -16,6 +16,7 @@
   "main": "./common-lingua.js",
   "module": "./common-lingua.js",
   "types": "./common-lingua.d.ts",
+  "files": ["./common-lingua.js", "./common-lingua.d.ts", "./package.json"],
   "scripts": {
     "build:prepare": "rimraf ./build",
     "build:make": "mkdir ./build",
