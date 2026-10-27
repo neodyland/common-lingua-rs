@@ -1,3 +1,4 @@
+# via https://huggingface.co/PleIAs/CommonLingua/blob/main/model.py Apache-2.0
 import numpy as np
 import torch
 from torch import nn
