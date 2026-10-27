@@ -50,6 +50,9 @@ jobs:
         with:
           name: build
           path: ./common-lingua-wasm/js/build
+      - uses: actions/deploy-pages@v5
+        with:
+          artifact_name: build
   release-gh:
     name: PreRelease gh
     runs-on: ubuntu-latest
