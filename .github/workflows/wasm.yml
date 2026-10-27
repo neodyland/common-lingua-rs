@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   build-wasm:
+    permissions:
+      id-token: write
     name: Build wasm
     runs-on: ubuntu-latest
     steps:
@@ -71,10 +73,7 @@ jobs:
           tag_name: wasm-build-${{ steps.get_hash.outputs.sha_short }}
           name: WASM Build ${{ steps.get_hash.outputs.sha_short }}
           prerelease: true
-          files: |
-            ./build/index.html
-            ./build/common-lingua.js
-            ./build/common-lingua.d.ts
+          files: ./common-lingua.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -90,7 +89,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
-      - run: ls && mv ./build/* . && rm -r ./build
       - uses: pnpm/setup@v3
         with:
           cache: false
