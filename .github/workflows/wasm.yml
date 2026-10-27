@@ -53,6 +53,7 @@ jobs:
   release-gh:
     name: PreRelease gh
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && !github.event_name == 'workflow_dispatch' }}
     needs: [build-wasm]
     steps:
       - name: Checkout
@@ -68,9 +69,9 @@ jobs:
           name: WASM Build ${{ steps.get_hash.outputs.sha_short }}
           prerelease: true
           files: |
-            ./build/index.html
-            ./build/common-lingua.js
-            ./build/common-lingua.d.ts
+            ./build/build/index.html
+            ./build/build/common-lingua.js
+            ./build/build/common-lingua.d.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -84,9 +85,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/download-artifact@v7
+      - run: mv ./build/build/* . && rm -r ./build
       - uses: pnpm/setup@v3
         with:
-          cache: true
+          cache: false
           version: ^12.0.0
       - name: publish
         run: pnpm publish
