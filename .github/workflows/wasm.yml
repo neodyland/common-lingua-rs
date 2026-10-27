@@ -28,13 +28,14 @@ jobs:
           rm -r ./wabt-1.0.41
       - name: Setup rust
         uses: dtolnay/rust-toolchain@stable
-      - uses: pnpm/setup@v3
-        with:
-          cache: true
       - name: Install wasm-pack
         run: cargo install wasm-pack
       - name: Checkout
         uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          cache: true
+          working-directory: ./common-lingua-wasm/js
       - name: Build wasm
         run: |
           cd ./common-lingua-wasm/js
