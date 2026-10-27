@@ -1,4 +1,4 @@
-use crate::load_weight;
+use crate::weights::load_weight;
 
 pub struct NoBiasLinear {
     pub weight_b: Vec<f32>,

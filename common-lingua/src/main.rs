@@ -1,7 +1,7 @@
-use common_lingua::{LANGS, MAX_LEN, Model, encode};
+use common_lingua::{LANGS, MAX_LEN, ModelFp32, encode};
 
 fn main() {
-    let model = Model::load();
+    let model = ModelFp32::load();
     let texts: Vec<String> = std::env::args().skip(1).collect();
     println!(
         "# {} languages, max_len={}, dtype=fp32, device=cpu",
