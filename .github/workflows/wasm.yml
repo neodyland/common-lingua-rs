@@ -16,6 +16,7 @@ jobs:
   build-wasm:
     permissions:
       id-token: write
+      pages: write
     name: Build wasm
     runs-on: ubuntu-latest
     steps:
