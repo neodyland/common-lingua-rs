@@ -1,11 +1,11 @@
 [workspace]
-members = ["./common-lingua", "./common-lingua-macros", "./common-lingua-wasm"]
+members = ["./common-lingua", "./common-lingua-macros", "./common-lingua-wasm", "./common-lingua-py"]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Rust port of common lingua, a language detect model."
+description = "Rust port of common lingua, a language detection model."
 license = "Apache-2.0"
 repository = "https://github.com/neodyland/common-lingua-rs"
 readme = "README.md"
@@ -18,7 +18,6 @@ syn = "3.0.9"
 quote = "1.0.47"
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
-itertools = "0.15.0"
 
 [profile.release]
 debug = true
