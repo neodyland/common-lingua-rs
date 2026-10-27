@@ -1,0 +1,59 @@
+name: Build wasm
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-wasm:
+    name: Build wasm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Binaryen and WABT
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-x86_64-linux.tar.gz -o binaryen.tar.gz
+          tar -zxvf binaryen.tar.gz
+          rm ./binaryen.tar.gz
+          cp ./binaryen-version_131/bin/* ~/.local/bin/
+          rm -r ./binaryen-version_131
+          curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.41/wabt-1.0.41-linux-x64.tar.gz -o wabt.tar.gz
+          tar -zxvf wabt.tar.gz
+          rm ./wabt.tar.gz
+          cp ./wabt-1.0.41/bin/* ~/.local/bin/
+          rm -r ./wabt-1.0.41
+      - name: Setup rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/setup@v6
+        with:
+          runtime: node@26
+          cache: true
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Build wasm
+        run: |
+          cd ./common-lingua-wasm/js
+          pnpm i --frozen-lockfile
+          pnpm build
+      - name: Get short SHA
+        id: get_hash
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: wasm-build-${{ steps.get_hash.outputs.sha_short }}
+          name: WASM Build ${{ steps.get_hash.outputs.sha_short }}
+          prerelease: true
+          files: |
+            ./common-lingua-wasm/js/build/index.html
+            ./common-lingua-wasm/js/build/common-lingua.js
+            ./common-lingua-wasm/js/build/common-lingua.d.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
