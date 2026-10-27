@@ -1,12 +1,21 @@
 {
   "name": "common-lingua",
-  "version": "1.0.0",
-  "description": "",
-  "keywords": [],
+  "version": "0.1.0",
+  "description": "Common lingua, a language detection model.",
+  "keywords": [
+    "nlp",
+    "language"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neodyland/common-lingua-rs"
+  },
   "license": "Apache-2.0",
-  "author": "",
+  "author": "googlefan",
   "type": "module",
-  "main": "index.js",
+  "main": "./common-lingua.js",
+  "module": "./common-lingua.js",
+  "types": "./common-lingua.d.ts",
   "scripts": {
     "build:prepare": "rimraf ./build",
     "build:make": "mkdir ./build",
@@ -14,13 +23,15 @@
     "build:wasm-strip": "wasm-strip ./build/raw/common_lingua_wasm_bg.wasm",
     "build:js": "esbuild --bundle --loader:.wasm=binary --platform=browser --external:node:* --format=esm --minify ./lib.ts --outfile=./build/common-lingua.js",
     "build:js-cp": "cp common-lingua.d.ts ./build/common-lingua.d.ts",
+    "build:package-json": "node build.ts",
     "build:html": "html-minifier ./index.html --collapse-whitespace --remove-comments --minify-css true --minify-js true -o ./build/index.html",
     "build:cleanup-raw": "rimraf ./build/raw",
-    "build": "run-s build:prepare build:make build:wasm build:wasm-strip build:js build:js-cp build:html build:cleanup-raw",
+    "build": "run-s build:prepare build:make build:wasm build:wasm-strip build:js build:js-cp build:html build:package-json build:cleanup-raw",
     "format": "oxfmt",
     "start": "serve ./build"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "html-minifier": "^4.0.0",
     "npm-run-all": "^4.1.5",

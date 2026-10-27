@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "common_lingua"
+description = "Common lingua, a language detection model."
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
