@@ -69,9 +69,9 @@ jobs:
           name: WASM Build ${{ steps.get_hash.outputs.sha_short }}
           prerelease: true
           files: |
-            ./build/build/index.html
-            ./build/build/common-lingua.js
-            ./build/build/common-lingua.d.ts
+            ./build/index.html
+            ./build/common-lingua.js
+            ./build/common-lingua.d.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -85,7 +85,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/download-artifact@v7
-      - run: mv ./build/build/* . && rm -r ./build
+      - run: mv ./build/* . && rm -r ./build
       - uses: pnpm/setup@v3
         with:
           cache: false
