@@ -53,9 +53,11 @@ jobs:
         with:
           name: build
           path: ./common-lingua-wasm/js/build
-      - uses: actions/deploy-pages@v5
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
         with:
-          artifact_name: build
+          path: ./common-lingua-wasm/js/build
+      - uses: actions/deploy-pages@v5
   release-gh:
     name: PreRelease gh
     runs-on: ubuntu-latest
