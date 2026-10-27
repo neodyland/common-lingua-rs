@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>lingua detect</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 16px;
+        color: #222;
+      }
+      h1 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin: 0 0 16px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 140px;
+        padding: 10px;
+        font-size: 15px;
+        font-family: inherit;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        resize: vertical;
+      }
+      button {
+        margin-top: 12px;
+        padding: 8px 18px;
+        font-size: 15px;
+        border: none;
+        border-radius: 6px;
+        background: #2563eb;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      button:disabled {
+        background: #9ca3af;
+        cursor: default;
+      }
+      #out {
+        margin-top: 24px;
+        border-top: 1px solid #eee;
+        padding-top: 16px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 6px 0;
+        font-size: 14px;
+      }
+      .lang {
+        width: 60px;
+        font-weight: 600;
+        font-family: ui-monospace, monospace;
+      }
+      .bar {
+        flex: 1;
+        height: 14px;
+        background: #f1f5f9;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .bar > div {
+        height: 100%;
+        background: #2563eb;
+        border-radius: 4px 0 0 4px;
+        transition: width 0.2s;
+      }
+      .prob {
+        width: 64px;
+        text-align: right;
+        font-family: ui-monospace, monospace;
+        color: #555;
+      }
+      #err {
+        color: #dc2626;
+        margin-top: 12px;
+        font-size: 14px;
+      }
+      #time {
+        font-size: 13px;
+        color: #888;
+        font-family: ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Language detect <span id="time"></span></h1>
+    <textarea id="in" placeholder="Type or paste text here..."></textarea>
+    <button id="btn">Detect</button>
+    <div id="err"></div>
+    <div id="out"></div>
+
+    <script type="module">
+      import { detect } from "./common-lingua.js";
+
+      const $in = document.getElementById("in");
+      const $btn = document.getElementById("btn");
+      const $out = document.getElementById("out");
+      const $err = document.getElementById("err");
+      const $time = document.getElementById("time");
+
+      function render(result) {
+        $out.innerHTML = "";
+        const entries = Object.entries(result)
+          .filter(([, p]) => p > 0.01)
+          .sort((a, b) => b[1] - a[1]);
+        const max = entries.length ? entries[0][1] : 1;
+        for (const [lang, prob] of entries) {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.innerHTML = `
+      <span class="lang"></span>
+      <div class="bar"><div></div></div>
+      <span class="prob"></span>
+    `;
+          row.querySelector(".lang").textContent = lang;
+          row.querySelector(".bar > div").style.width = `${(prob / max) * 100}%`;
+          row.querySelector(".prob").textContent = prob.toFixed(4);
+          $out.appendChild(row);
+        }
+      }
+
+      async function run() {
+        $err.textContent = "";
+        $time.textContent = "";
+        const text = $in.value;
+        if (!text.trim()) {
+          $out.innerHTML = "";
+          return;
+        }
+        $btn.disabled = true;
+        const t0 = performance.now();
+        try {
+          const result = detect(text);
+          const dt = performance.now() - t0;
+          render(result);
+          $time.textContent = `${dt.toFixed(1)} ms`;
+        } catch (e) {
+          $err.textContent = `Error: ${e.message ?? e}`;
+        } finally {
+          $btn.disabled = false;
+        }
+      }
+
+      $btn.addEventListener("click", run);
+
+      $in.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          e.preventDefault();
+          run();
+        }
+      });
+    </script>
+  </body>
+</html>

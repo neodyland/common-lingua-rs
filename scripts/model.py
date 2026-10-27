@@ -157,7 +157,13 @@ def load(checkpoint, dtype="fp32", device=None):
     model = ByteHybrid(
         num_classes=ckpt["num_classes"],
         max_len=ckpt["max_len"],
-        d_model=256, n_conv=3, n_attn=1, n_heads=4, conv_kernel=15, ngram_buckets=4096, ngram_dim=64,
+        d_model=256,
+        n_conv=3,
+        n_attn=1,
+        n_heads=4,
+        conv_kernel=15,
+        ngram_buckets=4096,
+        ngram_dim=64,
     )
     model.load_state_dict(ckpt["model_state_dict"])
     if dtype == "bf16":
