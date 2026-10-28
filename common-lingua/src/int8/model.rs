@@ -188,7 +188,7 @@ pub struct Scratch {
     qs: Vec<f32>,
     kq: Vec<i8>,
     ks: Vec<f32>,
-    scores: Vec<f32>,
+    stile: Vec<f32>,
     sq: Vec<i8>,
     ss: Vec<f32>,
     vb: Vec<i8>,
@@ -219,7 +219,7 @@ impl Scratch {
             qs: vec![0.0f32; MAX_LEN],
             kq: vec![0i8; MAX_LEN * HEAD_DIM],
             ks: vec![0.0f32; MAX_LEN],
-            scores: vec![0.0f32; MAX_LEN * MAX_LEN],
+            stile: vec![0.0f32; 64 * MAX_LEN],
             sq: vec![0i8; MAX_LEN * MAX_LEN],
             ss: vec![0.0f32; MAX_LEN],
             vb: vec![0i8; HEAD_DIM * MAX_LEN],
@@ -272,15 +272,14 @@ impl Scratch {
                 let d = -x * 1.442695;
                 let nn = (d + 12582912.0) - 12582912.0;
                 let rr = d - nn;
-                let mut pp = 0.0013888889;
-                pp = rr.mul_add(pp, 0.008333334);
-                pp = rr.mul_add(pp, 0.041666668);
-                pp = rr.mul_add(pp, 0.16666667);
-                pp = rr.mul_add(pp, 0.5);
+                let mut pp = 0.009618129;
+                pp = rr.mul_add(pp, 0.055504109);
+                pp = rr.mul_add(pp, 0.24022651);
+                pp = rr.mul_add(pp, 0.69314718);
                 pp = rr.mul_add(pp, 1.0);
-                pp = rr.mul_add(pp, 1.0);
-                let e = pp * f32::from_bits(((nn as i32 + 127) << 23) as u32);
-                *g = (*u) * x / (1.0 + e);
+                let ni = (nn as i32).clamp(-126, 127);
+                let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
+                *g = (*u) * x / (1.0 + ex);
             }
         }
         quant_rows(
@@ -305,25 +304,30 @@ impl Scratch {
 
     fn conv_rows(&mut self, weight: &[f32], bias: &[f32], start: usize, end: usize) {
         for pos in start..end {
-            let row = &mut self.conv[pos * D..pos * D + D];
-            row.copy_from_slice(bias);
             let first = if pos + 1 >= KERNEL {
                 0
             } else {
                 KERNEL - 1 - pos
             };
-            for k in first..KERNEL {
-                let src = pos + k - (KERNEL - 1);
-                let hr = &self.h[src * D..src * D + D];
-                let wr = &weight[k * D..k * D + D];
-                for o in 0..D {
-                    row[o] = wr[o].mul_add(hr[o], row[o]);
+            let mut ob = 0;
+            while ob + 32 <= D {
+                let mut acc = [0.0f32; 32];
+                acc.copy_from_slice(&bias[ob..ob + 32]);
+                for k in first..KERNEL {
+                    let src = pos + k - (KERNEL - 1);
+                    let hr = &self.h[src * D + ob..src * D + ob + 32];
+                    let wr = &weight[k * D + ob..k * D + ob + 32];
+                    for t in 0..32 {
+                        acc[t] = wr[t].mul_add(hr[t], acc[t]);
+                    }
                 }
+                silu_inplace(&mut acc);
+                let row = &mut self.conv[pos * D + ob..pos * D + ob + 32];
+                row.copy_from_slice(&acc);
+                ob += 32;
             }
-            silu_inplace(row);
         }
     }
-
     fn conv_forward(&mut self, layer: &ConvLayer, stable: usize) -> usize {
         let r = if stable >= 510 { 510 } else { stable + 14 };
         if r + 1 >= 496 {
@@ -350,9 +354,12 @@ impl Scratch {
         {
             *xv += *cv;
         }
-        for pos in 510..MAX_LEN {
-            for o in 0..D {
-                self.x[pos * D + o] += self.conv[pos * D + o];
+        if r < 510 {
+            for (xv, cv) in self.x[510 * D..]
+                .iter_mut()
+                .zip(self.conv[510 * D..].iter())
+            {
+                *xv += *cv;
             }
         }
 
@@ -371,9 +378,9 @@ impl Scratch {
         r
     }
 
-    fn softmax_quant(&mut self, rows: usize) {
-        for r in 0..rows {
-            let row = &mut self.scores[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
+    fn softmax_tile(&mut self, rlen: usize, rb: usize) {
+        for r in 0..rlen {
+            let row = &mut self.stile[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
             let mut m4 = [f32::NEG_INFINITY; 4];
             let mut c = 0;
             while c + 4 <= MAX_LEN {
@@ -399,14 +406,13 @@ impl Scratch {
                     let d = (v - mx) * 1.442695;
                     let nn = (d + 12582912.0) - 12582912.0;
                     let rr = d - nn;
-                    let mut pp = 0.0013888889;
-                    pp = rr.mul_add(pp, 0.008333334);
-                    pp = rr.mul_add(pp, 0.041666668);
-                    pp = rr.mul_add(pp, 0.16666667);
-                    pp = rr.mul_add(pp, 0.5);
+                    let mut pp = 0.009618129;
+                    pp = rr.mul_add(pp, 0.055504109);
+                    pp = rr.mul_add(pp, 0.24022651);
+                    pp = rr.mul_add(pp, 0.69314718);
                     pp = rr.mul_add(pp, 1.0);
-                    pp = rr.mul_add(pp, 1.0);
-                    let e = pp * f32::from_bits(((nn as i32 + 127) << 23) as u32);
+                    let ni = (nn as i32).clamp(-126, 127);
+                    let e = pp * f32::from_bits(((ni + 127) as u32) << 23);
                     row[c + t] = e;
                     s4[t] += e;
                 }
@@ -414,11 +420,12 @@ impl Scratch {
             }
             let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
             let scale = 127.0 / sum;
-            let dst = &mut self.sq[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
+            let g = rb + r;
+            let dst = &mut self.sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
             for (d, v) in dst.iter_mut().zip(row.iter()) {
                 *d = (*v * scale) as i8;
             }
-            self.ss[r] = sum * (1.0 / 127.0);
+            self.ss[g] = sum * (1.0 / 127.0);
         }
     }
 
@@ -532,22 +539,26 @@ impl Scratch {
                 self.ks[pos] = quant_row(src, &mut self.kq[pos * HEAD_DIM..pos * HEAD_DIM + HEAD_DIM]);
             }
 
-            gemm::<HEAD_DIM, false>(
-                &self.qq,
-                HEAD_DIM,
-                &self.qs,
-                rows,
-                &self.kq,
-                &self.ks,
-                MAX_LEN,
-                &mut self.scores,
-                MAX_LEN,
-            );
-
-            self.softmax_quant(rows);
+            let mut rb = 0;
+            while rb < rows {
+                let rend = if rb + 64 < rows { rb + 64 } else { rows };
+                let rlen = rend - rb;
+                gemm::<HEAD_DIM, false>(
+                    &self.qq[rb * HEAD_DIM..],
+                    HEAD_DIM,
+                    &self.qs[rb..],
+                    rlen,
+                    &self.kq,
+                    &self.ks,
+                    MAX_LEN,
+                    &mut self.stile,
+                    MAX_LEN,
+                );
+                self.softmax_tile(rlen, rb);
+                rb = rend;
+            }
 
             self.quant_v(voff);
-
             gemm::<MAX_LEN, false>(
                 &self.sq,
                 MAX_LEN,

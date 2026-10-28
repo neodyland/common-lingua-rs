@@ -108,7 +108,11 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out_stride: usize,
 ) {
     let nb = if K == 64 { 1 } else { 3 };
-    gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, nb);
+    if K == 256 || K == 512 {
+        gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 48);
+    } else {
+        gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, nb);
+    }
 }
 
 #[inline(never)]
@@ -283,6 +287,108 @@ fn gemm_nb<const K: usize, const ACC: bool>(
             }
         }
         i += 1;
+    }
+}
+
+fn gemm_jb<const K: usize, const ACC: bool>(
+    a: &[i8],
+    a_stride: usize,
+    a_scale: &[f32],
+    m: usize,
+    w: &[i8],
+    w_scale: &[f32],
+    n: usize,
+    out: &mut [f32],
+    out_stride: usize,
+    jb: usize,
+) {
+    let mut j0 = 0;
+    while j0 < n {
+        let jend = if j0 + jb > n { n } else { j0 + jb };
+        let mut i = 0;
+        while i + R <= m && (i + R) * out_stride <= out.len() && (i + R) <= a_scale.len() {
+            let a0 = &a[i * a_stride..i * a_stride + K];
+            let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
+            let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
+            let a3 = &a[(i + 3) * a_stride..(i + 3) * a_stride + K];
+            let a4 = &a[(i + 4) * a_stride..(i + 4) * a_stride + K];
+            let a5 = &a[(i + 5) * a_stride..(i + 5) * a_stride + K];
+            let a6 = &a[(i + 6) * a_stride..(i + 6) * a_stride + K];
+            let a7 = &a[(i + 7) * a_stride..(i + 7) * a_stride + K];
+            let base = i * out_stride;
+            let (r0, rest) = out[base..].split_at_mut(out_stride);
+            let (r1, rest) = rest.split_at_mut(out_stride);
+            let (r2, rest) = rest.split_at_mut(out_stride);
+            let (r3, rest) = rest.split_at_mut(out_stride);
+            let (r4, rest) = rest.split_at_mut(out_stride);
+            let (r5, rest) = rest.split_at_mut(out_stride);
+            let (r6, rest) = rest.split_at_mut(out_stride);
+            let (r7, _) = rest.split_at_mut(out_stride);
+            let s0 = a_scale[i];
+            let s1 = a_scale[i + 1];
+            let s2 = a_scale[i + 2];
+            let s3 = a_scale[i + 3];
+            let s4 = a_scale[i + 4];
+            let s5 = a_scale[i + 5];
+            let s6 = a_scale[i + 6];
+            let s7 = a_scale[i + 7];
+            let mut j = j0;
+            while j + 3 <= jend {
+                let b0 = &w[j * K..j * K + K];
+                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
+                let b2 = &w[(j + 2) * K..(j + 2) * K + K];
+                let w0 = w_scale[j];
+                let w1 = w_scale[j + 1];
+                let w2 = w_scale[j + 2];
+                let (d0, d1, d2) = dot3::<K>(a0, b0, b1, b2);
+                put3::<ACC>(&mut r0[j..], s0 * w0 * d0 as f32, s0 * w1 * d1 as f32, s0 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a1, b0, b1, b2);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * d0 as f32, s1 * w1 * d1 as f32, s1 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a2, b0, b1, b2);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * d0 as f32, s2 * w1 * d1 as f32, s2 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a3, b0, b1, b2);
+                put3::<ACC>(&mut r3[j..], s3 * w0 * d0 as f32, s3 * w1 * d1 as f32, s3 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a4, b0, b1, b2);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * d0 as f32, s4 * w1 * d1 as f32, s4 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a5, b0, b1, b2);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * d0 as f32, s5 * w1 * d1 as f32, s5 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a6, b0, b1, b2);
+                put3::<ACC>(&mut r6[j..], s6 * w0 * d0 as f32, s6 * w1 * d1 as f32, s6 * w2 * d2 as f32);
+                let (d0, d1, d2) = dot3::<K>(a7, b0, b1, b2);
+                put3::<ACC>(&mut r7[j..], s7 * w0 * d0 as f32, s7 * w1 * d1 as f32, s7 * w2 * d2 as f32);
+                j += 3;
+            }
+            while j < jend {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                put::<ACC>(&mut r0[j..], s0 * w0 * dot::<K>(a0, b0) as f32);
+                put::<ACC>(&mut r1[j..], s1 * w0 * dot::<K>(a1, b0) as f32);
+                put::<ACC>(&mut r2[j..], s2 * w0 * dot::<K>(a2, b0) as f32);
+                put::<ACC>(&mut r3[j..], s3 * w0 * dot::<K>(a3, b0) as f32);
+                put::<ACC>(&mut r4[j..], s4 * w0 * dot::<K>(a4, b0) as f32);
+                put::<ACC>(&mut r5[j..], s5 * w0 * dot::<K>(a5, b0) as f32);
+                put::<ACC>(&mut r6[j..], s6 * w0 * dot::<K>(a6, b0) as f32);
+                put::<ACC>(&mut r7[j..], s7 * w0 * dot::<K>(a7, b0) as f32);
+                j += 1;
+            }
+            i += R;
+        }
+        while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
+            let ar = &a[i * a_stride..i * a_stride + K];
+            let sa = a_scale[i];
+            let orow = &mut out[i * out_stride..i * out_stride + n];
+            for j in j0..jend {
+                let br = &w[j * K..j * K + K];
+                let v = sa * w_scale[j] * dot::<K>(ar, br) as f32;
+                if ACC {
+                    orow[j] += v;
+                } else {
+                    orow[j] = v;
+                }
+            }
+            i += 1;
+        }
+        j0 += jb;
     }
 }
 
