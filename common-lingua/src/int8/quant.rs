@@ -92,6 +92,8 @@ pub fn quant_row_lsq(src: &[f32], dst: &mut [i8]) -> f32 {
 }
 
 const R: usize = 8;
+const RJ: usize = 12;
+const JB_LOCK: usize = 84;
 
 #[inline(always)]
 fn dot<const K: usize>(a: &[i8], b: &[i8]) -> i32 {
@@ -137,11 +139,9 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out: &mut [f32],
     out_stride: usize,
 ) {
-    let nb = if K == 64 { 1 } else { 3 };
-    if K == 512 {
-        gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 24);
-    } else if K == 256 {
-        gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 48);
+    let nb = 3;
+    if K >= 256 {
+        gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, JB_LOCK);
     } else {
         gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, nb);
     }
@@ -338,7 +338,90 @@ fn gemm_jb<const K: usize, const ACC: bool>(
     while j0 < n {
         let jend = if j0 + jb > n { n } else { j0 + jb };
         let mut i = 0;
-        while i + R <= m && (i + R) * out_stride <= out.len() && (i + R) <= a_scale.len() {
+        while i + RJ <= m && (i + RJ) * out_stride <= out.len() && (i + RJ) <= a_scale.len() {
+            let a0 = &a[i * a_stride..i * a_stride + K];
+            let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
+            let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
+            let a3 = &a[(i + 3) * a_stride..(i + 3) * a_stride + K];
+            let a4 = &a[(i + 4) * a_stride..(i + 4) * a_stride + K];
+            let a5 = &a[(i + 5) * a_stride..(i + 5) * a_stride + K];
+            let a6 = &a[(i + 6) * a_stride..(i + 6) * a_stride + K];
+            let a7 = &a[(i + 7) * a_stride..(i + 7) * a_stride + K];
+            let a8 = &a[(i + 8) * a_stride..(i + 8) * a_stride + K];
+            let a9 = &a[(i + 9) * a_stride..(i + 9) * a_stride + K];
+            let a10 = &a[(i + 10) * a_stride..(i + 10) * a_stride + K];
+            let a11 = &a[(i + 11) * a_stride..(i + 11) * a_stride + K];
+            let base = i * out_stride;
+            let (r0, rest) = out[base..].split_at_mut(out_stride);
+            let (r1, rest) = rest.split_at_mut(out_stride);
+            let (r2, rest) = rest.split_at_mut(out_stride);
+            let (r3, rest) = rest.split_at_mut(out_stride);
+            let (r4, rest) = rest.split_at_mut(out_stride);
+            let (r5, rest) = rest.split_at_mut(out_stride);
+            let (r6, rest) = rest.split_at_mut(out_stride);
+            let (r7, rest) = rest.split_at_mut(out_stride);
+            let (r8, rest) = rest.split_at_mut(out_stride);
+            let (r9, rest) = rest.split_at_mut(out_stride);
+            let (r10, rest) = rest.split_at_mut(out_stride);
+            let (r11, _) = rest.split_at_mut(out_stride);
+            let s0 = a_scale[i];
+            let s1 = a_scale[i + 1];
+            let s2 = a_scale[i + 2];
+            let s3 = a_scale[i + 3];
+            let s4 = a_scale[i + 4];
+            let s5 = a_scale[i + 5];
+            let s6 = a_scale[i + 6];
+            let s7 = a_scale[i + 7];
+            let s8 = a_scale[i + 8];
+            let s9 = a_scale[i + 9];
+            let s10 = a_scale[i + 10];
+            let s11 = a_scale[i + 11];
+            let mut j = j0;
+            while j + 3 <= jend {
+                let b0 = &w[j * K..j * K + K];
+                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
+                let b2 = &w[(j + 2) * K..(j + 2) * K + K];
+                let w0 = w_scale[j];
+                let w1 = w_scale[j + 1];
+                let w2 = w_scale[j + 2];
+                let g0 = dot3x3::<K>(a0, a1, a2, b0, b1, b2);
+                put3::<ACC>(&mut r0[j..], s0 * w0 * g0[0] as f32, s0 * w1 * g0[1] as f32, s0 * w2 * g0[2] as f32);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * g0[3] as f32, s1 * w1 * g0[4] as f32, s1 * w2 * g0[5] as f32);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * g0[6] as f32, s2 * w1 * g0[7] as f32, s2 * w2 * g0[8] as f32);
+                let g1 = dot3x3::<K>(a3, a4, a5, b0, b1, b2);
+                put3::<ACC>(&mut r3[j..], s3 * w0 * g1[0] as f32, s3 * w1 * g1[1] as f32, s3 * w2 * g1[2] as f32);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * g1[3] as f32, s4 * w1 * g1[4] as f32, s4 * w2 * g1[5] as f32);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * g1[6] as f32, s5 * w1 * g1[7] as f32, s5 * w2 * g1[8] as f32);
+                let g2 = dot3x3::<K>(a6, a7, a8, b0, b1, b2);
+                put3::<ACC>(&mut r6[j..], s6 * w0 * g2[0] as f32, s6 * w1 * g2[1] as f32, s6 * w2 * g2[2] as f32);
+                put3::<ACC>(&mut r7[j..], s7 * w0 * g2[3] as f32, s7 * w1 * g2[4] as f32, s7 * w2 * g2[5] as f32);
+                put3::<ACC>(&mut r8[j..], s8 * w0 * g2[6] as f32, s8 * w1 * g2[7] as f32, s8 * w2 * g2[8] as f32);
+                let g3 = dot3x3::<K>(a9, a10, a11, b0, b1, b2);
+                put3::<ACC>(&mut r9[j..], s9 * w0 * g3[0] as f32, s9 * w1 * g3[1] as f32, s9 * w2 * g3[2] as f32);
+                put3::<ACC>(&mut r10[j..], s10 * w0 * g3[3] as f32, s10 * w1 * g3[4] as f32, s10 * w2 * g3[5] as f32);
+                put3::<ACC>(&mut r11[j..], s11 * w0 * g3[6] as f32, s11 * w1 * g3[7] as f32, s11 * w2 * g3[8] as f32);
+                j += 3;
+            }
+            while j < jend {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                put::<ACC>(&mut r0[j..], s0 * w0 * dot::<K>(a0, b0) as f32);
+                put::<ACC>(&mut r1[j..], s1 * w0 * dot::<K>(a1, b0) as f32);
+                put::<ACC>(&mut r2[j..], s2 * w0 * dot::<K>(a2, b0) as f32);
+                put::<ACC>(&mut r3[j..], s3 * w0 * dot::<K>(a3, b0) as f32);
+                put::<ACC>(&mut r4[j..], s4 * w0 * dot::<K>(a4, b0) as f32);
+                put::<ACC>(&mut r5[j..], s5 * w0 * dot::<K>(a5, b0) as f32);
+                put::<ACC>(&mut r6[j..], s6 * w0 * dot::<K>(a6, b0) as f32);
+                put::<ACC>(&mut r7[j..], s7 * w0 * dot::<K>(a7, b0) as f32);
+                put::<ACC>(&mut r8[j..], s8 * w0 * dot::<K>(a8, b0) as f32);
+                put::<ACC>(&mut r9[j..], s9 * w0 * dot::<K>(a9, b0) as f32);
+                put::<ACC>(&mut r10[j..], s10 * w0 * dot::<K>(a10, b0) as f32);
+                put::<ACC>(&mut r11[j..], s11 * w0 * dot::<K>(a11, b0) as f32);
+                j += 1;
+            }
+            i += RJ;
+        }
+        while i + 8 <= m && (i + 8) * out_stride <= out.len() && (i + 8) <= a_scale.len() {
             let a0 = &a[i * a_stride..i * a_stride + K];
             let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
             let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
@@ -372,22 +455,17 @@ fn gemm_jb<const K: usize, const ACC: bool>(
                 let w0 = w_scale[j];
                 let w1 = w_scale[j + 1];
                 let w2 = w_scale[j + 2];
-                let (d0, d1, d2) = dot3::<K>(a0, b0, b1, b2);
-                put3::<ACC>(&mut r0[j..], s0 * w0 * d0 as f32, s0 * w1 * d1 as f32, s0 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a1, b0, b1, b2);
-                put3::<ACC>(&mut r1[j..], s1 * w0 * d0 as f32, s1 * w1 * d1 as f32, s1 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a2, b0, b1, b2);
-                put3::<ACC>(&mut r2[j..], s2 * w0 * d0 as f32, s2 * w1 * d1 as f32, s2 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a3, b0, b1, b2);
-                put3::<ACC>(&mut r3[j..], s3 * w0 * d0 as f32, s3 * w1 * d1 as f32, s3 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a4, b0, b1, b2);
-                put3::<ACC>(&mut r4[j..], s4 * w0 * d0 as f32, s4 * w1 * d1 as f32, s4 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a5, b0, b1, b2);
-                put3::<ACC>(&mut r5[j..], s5 * w0 * d0 as f32, s5 * w1 * d1 as f32, s5 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a6, b0, b1, b2);
-                put3::<ACC>(&mut r6[j..], s6 * w0 * d0 as f32, s6 * w1 * d1 as f32, s6 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a7, b0, b1, b2);
-                put3::<ACC>(&mut r7[j..], s7 * w0 * d0 as f32, s7 * w1 * d1 as f32, s7 * w2 * d2 as f32);
+                let g0 = dot3x3::<K>(a0, a1, a2, b0, b1, b2);
+                put3::<ACC>(&mut r0[j..], s0 * w0 * g0[0] as f32, s0 * w1 * g0[1] as f32, s0 * w2 * g0[2] as f32);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * g0[3] as f32, s1 * w1 * g0[4] as f32, s1 * w2 * g0[5] as f32);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * g0[6] as f32, s2 * w1 * g0[7] as f32, s2 * w2 * g0[8] as f32);
+                let g1 = dot3x3::<K>(a3, a4, a5, b0, b1, b2);
+                put3::<ACC>(&mut r3[j..], s3 * w0 * g1[0] as f32, s3 * w1 * g1[1] as f32, s3 * w2 * g1[2] as f32);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * g1[3] as f32, s4 * w1 * g1[4] as f32, s4 * w2 * g1[5] as f32);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * g1[6] as f32, s5 * w1 * g1[7] as f32, s5 * w2 * g1[8] as f32);
+                let g2 = dot3x2::<K>(a6, a7, b0, b1, b2);
+                put3::<ACC>(&mut r6[j..], s6 * w0 * g2[0] as f32, s6 * w1 * g2[1] as f32, s6 * w2 * g2[2] as f32);
+                put3::<ACC>(&mut r7[j..], s7 * w0 * g2[3] as f32, s7 * w1 * g2[4] as f32, s7 * w2 * g2[5] as f32);
                 j += 3;
             }
             while j < jend {
@@ -403,7 +481,7 @@ fn gemm_jb<const K: usize, const ACC: bool>(
                 put::<ACC>(&mut r7[j..], s7 * w0 * dot::<K>(a7, b0) as f32);
                 j += 1;
             }
-            i += R;
+            i += 8;
         }
         while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
             let ar = &a[i * a_stride..i * a_stride + K];
@@ -459,6 +537,55 @@ fn dot3<const K: usize>(a: &[i8], b0: &[i8], b1: &[i8], b2: &[i8]) -> (i32, i32,
         s2 += av * (b2[l] as i32);
     }
     (s0, s1, s2)
+}
+
+#[inline(always)]
+fn dot3x3<const K: usize>(
+    a0: &[i8],
+    a1: &[i8],
+    a2: &[i8],
+    b0: &[i8],
+    b1: &[i8],
+    b2: &[i8],
+) -> [i32; 9] {
+    let mut s = [0i32; 9];
+    for l in 0..K {
+        let x0 = b0[l] as i32;
+        let x1 = b1[l] as i32;
+        let x2 = b2[l] as i32;
+        let av = a0[l] as i32;
+        s[0] += av * x0;
+        s[1] += av * x1;
+        s[2] += av * x2;
+        let cv = a1[l] as i32;
+        s[3] += cv * x0;
+        s[4] += cv * x1;
+        s[5] += cv * x2;
+        let dv = a2[l] as i32;
+        s[6] += dv * x0;
+        s[7] += dv * x1;
+        s[8] += dv * x2;
+    }
+    s
+}
+
+#[inline(always)]
+fn dot3x2<const K: usize>(a0: &[i8], a1: &[i8], b0: &[i8], b1: &[i8], b2: &[i8]) -> [i32; 6] {
+    let mut s = [0i32; 6];
+    for l in 0..K {
+        let x0 = b0[l] as i32;
+        let x1 = b1[l] as i32;
+        let x2 = b2[l] as i32;
+        let av = a0[l] as i32;
+        s[0] += av * x0;
+        s[1] += av * x1;
+        s[2] += av * x2;
+        let cv = a1[l] as i32;
+        s[3] += cv * x0;
+        s[4] += cv * x1;
+        s[5] += cv * x2;
+    }
+    s
 }
 
 fn gemm_dyn(

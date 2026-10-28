@@ -1,4 +1,22 @@
-use crate::fp32::math::{gelu, silu_inplace, softmax_rows};
+use crate::fp32::math::{gelu, softmax_rows};
+
+fn silu_fast(x: &mut [f32]) {
+    for v in x.iter_mut() {
+        let d = -*v * 1.442695;
+        let nn = (d + 12582912.0) - 12582912.0;
+        let rr = d - nn;
+        let mut pp = 0.05550411;
+        pp = rr.mul_add(pp, 0.24022651);
+        pp = rr.mul_add(pp, 0.69314718);
+        pp = rr.mul_add(pp, 1.0);
+        let ni = (nn as i32).clamp(-126, 127);
+        let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
+        let den = 1.0 + ex;
+        let r0 = f32::from_bits(0x7EF311C3 - den.to_bits());
+        let r1 = r0 * (2.0 - den * r0);
+        *v = *v * r1;
+    }
+}
 
 const LN_EPS: f32 = 1e-5;
 use crate::global::{
@@ -272,8 +290,7 @@ impl Scratch {
                 let d = -x * 1.442695;
                 let nn = (d + 12582912.0) - 12582912.0;
                 let rr = d - nn;
-                let mut pp = 0.009618129;
-                pp = rr.mul_add(pp, 0.055504109);
+                let mut pp = 0.05550411;
                 pp = rr.mul_add(pp, 0.24022651);
                 pp = rr.mul_add(pp, 0.69314718);
                 pp = rr.mul_add(pp, 1.0);
@@ -281,16 +298,9 @@ impl Scratch {
                 let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
                 *g = (*u) * x / (1.0 + ex);
             }
+            let gq = &mut self.bufq[(start + r) * half..(start + r) * half + half];
+            self.bufs[start + r] = quant_row(&self.buf[base..base + half], gq);
         }
-        quant_rows(
-            &self.buf[start * n..start * n + len * n],
-            n,
-            &mut self.bufq[start * half..start * half + len * half],
-            half,
-            &mut self.bufs[start..end],
-            len,
-            half,
-        );
         ffn.down.run(
             &self.bufq[start * half..],
             half,
@@ -321,7 +331,7 @@ impl Scratch {
                         acc[t] = wr[t].mul_add(hr[t], acc[t]);
                     }
                 }
-                silu_inplace(&mut acc);
+                silu_fast(&mut acc);
                 let row = &mut self.conv[pos * D + ob..pos * D + ob + 32];
                 row.copy_from_slice(&acc);
                 ob += 32;
@@ -380,7 +390,9 @@ impl Scratch {
 
     fn softmax_tile(&mut self, rlen: usize, rb: usize) {
         for r in 0..rlen {
+            let g = rb + r;
             let row = &mut self.stile[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
+            let dst = &mut self.sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
             let mut m4 = [f32::NEG_INFINITY; 4];
             let mut c = 0;
             while c + 4 <= MAX_LEN {
@@ -406,25 +418,17 @@ impl Scratch {
                     let d = (v - mx) * 1.442695;
                     let nn = (d + 12582912.0) - 12582912.0;
                     let rr = d - nn;
-                    let mut pp = 0.009618129;
-                    pp = rr.mul_add(pp, 0.055504109);
-                    pp = rr.mul_add(pp, 0.24022651);
+                    let mut pp = 0.24022651;
                     pp = rr.mul_add(pp, 0.69314718);
                     pp = rr.mul_add(pp, 1.0);
                     let ni = (nn as i32).clamp(-126, 127);
                     let e = pp * f32::from_bits(((ni + 127) as u32) << 23);
-                    row[c + t] = e;
+                    dst[c + t] = (e * 127.0).round() as i8;
                     s4[t] += e;
                 }
                 c += 4;
             }
             let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
-            let scale = 127.0;
-            let g = rb + r;
-            let dst = &mut self.sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
-            for (d, v) in dst.iter_mut().zip(row.iter()) {
-                *d = (*v * scale).round() as i8;
-            }
             self.ss[g] = 1.0 / (127.0 * sum);
         }
     }
@@ -483,7 +487,7 @@ impl Scratch {
                 .qkv
                 .run(&self.hq, D, &self.hs, MAX_LEN, &mut self.qkv, 3 * D, false);
         } else {
-            quant_rows(
+        quant_rows(
                 &self.h[0..cut * D],
                 D,
                 &mut self.hq[0..cut * D],
@@ -555,8 +559,8 @@ impl Scratch {
                     MAX_LEN,
                 );
                 self.softmax_tile(rlen, rb);
-                rb = rend;            }
-
+                rb = rend;
+            }
             self.quant_v(voff);
             gemm::<MAX_LEN, false>(
                 &self.sq,
@@ -669,8 +673,7 @@ impl Model {
                 s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
             }
         }
-        self.ngram_into(byte_ids, 0, stop, &mut s.ngram);
-        if !full {
+        self.ngram_into(byte_ids, 0, stop, &mut s.ngram);        if !full {
             self.ngram_into(byte_ids, 510, MAX_LEN, &mut s.ngram);
         }
         quant_rows(
