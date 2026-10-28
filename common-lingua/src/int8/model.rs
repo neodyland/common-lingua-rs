@@ -419,13 +419,13 @@ impl Scratch {
                 c += 4;
             }
             let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
-            let scale = 127.0 / sum;
+            let scale = 127.0;
             let g = rb + r;
             let dst = &mut self.sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
             for (d, v) in dst.iter_mut().zip(row.iter()) {
-                *d = (*v * scale) as i8;
+                *d = (*v * scale).round() as i8;
             }
-            self.ss[g] = sum * (1.0 / 127.0);
+            self.ss[g] = 1.0 / (127.0 * sum);
         }
     }
 
@@ -464,7 +464,7 @@ impl Scratch {
         for pos in 0..MAX_LEN {
             let src = &self.qkv[pos * 3 * D + voff..pos * 3 * D + voff + HEAD_DIM];
             for j in 0..HEAD_DIM {
-                self.vb[j * MAX_LEN + pos] = (src[j] * inv[j]) as i8;
+                self.vb[j * MAX_LEN + pos] = (src[j] * inv[j]).round() as i8;
             }
         }
     }
@@ -555,8 +555,7 @@ impl Scratch {
                     MAX_LEN,
                 );
                 self.softmax_tile(rlen, rb);
-                rb = rend;
-            }
+                rb = rend;            }
 
             self.quant_v(voff);
             gemm::<MAX_LEN, false>(
@@ -674,7 +673,6 @@ impl Model {
         if !full {
             self.ngram_into(byte_ids, 510, MAX_LEN, &mut s.ngram);
         }
-
         quant_rows(
             &s.ngram,
             NGRAM_DIM,

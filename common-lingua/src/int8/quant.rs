@@ -35,12 +35,12 @@ pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
     let mut c = 0;
     while c + 4 <= n {
         for t in 0..4 {
-            dst[c + t] = (src[c + t] * inv) as i8;
+            dst[c + t] = (src[c + t] * inv).round() as i8;
         }
         c += 4;
     }
     while c < n {
-        dst[c] = (src[c] * inv) as i8;
+        dst[c] = (src[c] * inv).round() as i8;
         c += 1;
     }
     scale
@@ -58,6 +58,36 @@ pub fn quant_rows(
     for r in 0..rows {
         let s = &src[r * src_stride..r * src_stride + n];
         scales[r] = quant_row(s, &mut dst[r * dst_stride..r * dst_stride + n]);
+    }
+}
+
+pub fn quant_row_lsq(src: &[f32], dst: &mut [i8]) -> f32 {
+    let n = src.len();
+    let mut mx = 0.0f32;
+    for v in src.iter() {
+        let a = v.abs();
+        if a > mx {
+            mx = a;
+        }
+    }
+    if mx <= 0.0 {
+        dst.fill(0);
+        return 0.0;
+    }
+    let inv = 127.0 / mx;
+    let mut d1 = 0.0f32;
+    let mut d2 = 0.0f32;
+    for i in 0..n {
+        let q = (src[i] * inv).round() as i8;
+        dst[i] = q;
+        let qf = q as f32;
+        d1 += src[i] * qf;
+        d2 += qf * qf;
+    }
+    if d2 > 0.0 {
+        d1 / d2
+    } else {
+        mx * (1.0 / 127.0)
     }
 }
 
@@ -108,7 +138,9 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out_stride: usize,
 ) {
     let nb = if K == 64 { 1 } else { 3 };
-    if K == 256 || K == 512 {
+    if K == 512 {
+        gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 24);
+    } else if K == 256 {
         gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 48);
     } else {
         gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, nb);
@@ -473,7 +505,10 @@ impl QMat {
     pub fn from_f32(w: &[f32], n: usize, k: usize) -> Self {
         let mut q = vec![0i8; n * k];
         let mut scale = vec![0.0f32; n];
-        quant_rows(w, k, &mut q, k, &mut scale, n, k);
+        for r in 0..n {
+            let s = &w[r * k..r * k + k];
+            scale[r] = quant_row_lsq(s, &mut q[r * k..r * k + k]);
+        }
         Self { w: q, scale, n, k }
     }
 
