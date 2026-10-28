@@ -1,12 +1,30 @@
 use crate::weights::load_weight;
 
 pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
-    let mut mx = 0.0f32;
-    for v in src.iter() {
-        let a = v.abs();
+    let n = src.len();
+    let mut m4 = [0.0f32; 4];
+    let mut c = 0;
+    while c + 4 <= n {
+        for t in 0..4 {
+            let a = src[c + t].abs();
+            if a > m4[t] {
+                m4[t] = a;
+            }
+        }
+        c += 4;
+    }
+    let mut mx = m4[0];
+    for t in 1..4 {
+        if m4[t] > mx {
+            mx = m4[t];
+        }
+    }
+    while c < n {
+        let a = src[c].abs();
         if a > mx {
             mx = a;
         }
+        c += 1;
     }
     if mx <= 0.0 {
         dst.fill(0);
@@ -14,8 +32,16 @@ pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
     }
     let inv = 127.0 / mx;
     let scale = mx * (1.0 / 127.0);
-    for (d, v) in dst.iter_mut().zip(src.iter()) {
-        *d = (*v * inv) as i8;
+    let mut c = 0;
+    while c + 4 <= n {
+        for t in 0..4 {
+            dst[c + t] = (src[c + t] * inv) as i8;
+        }
+        c += 4;
+    }
+    while c < n {
+        dst[c] = (src[c] * inv) as i8;
+        c += 1;
     }
     scale
 }
@@ -32,37 +58,6 @@ pub fn quant_rows(
     for r in 0..rows {
         let s = &src[r * src_stride..r * src_stride + n];
         scales[r] = quant_row(s, &mut dst[r * dst_stride..r * dst_stride + n]);
-    }
-}
-
-pub fn quant_cols(
-    src: &[f32],
-    src_stride: usize,
-    dst: &mut [i8],
-    scales: &mut [f32],
-    rows: usize,
-    cols: usize,
-) {
-    for c in 0..cols {
-        let mut mx = 0.0f32;
-        for r in 0..rows {
-            let v = src[r * src_stride + c].abs();
-            if v > mx {
-                mx = v;
-            }
-        }
-        if mx <= 0.0 {
-            scales[c] = 0.0;
-            for r in 0..rows {
-                dst[c * rows + r] = 0;
-            }
-            continue;
-        }
-        let inv = 127.0 / mx;
-        for r in 0..rows {
-            dst[c * rows + r] = (src[r * src_stride + c] * inv) as i8;
-        }
-        scales[c] = mx * (1.0 / 127.0);
     }
 }
 
@@ -130,7 +125,7 @@ fn gemm_nb<const K: usize, const ACC: bool>(
     nb: usize,
 ) {
     let mut i = 0;
-    while i + R <= m && (i + R) * out_stride <= out.len() {
+    while i + R <= m && (i + R) * out_stride <= out.len() && (i + R) <= a_scale.len() {
         let a0 = &a[i * a_stride..i * a_stride + K];
         let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
         let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
@@ -274,7 +269,7 @@ fn gemm_nb<const K: usize, const ACC: bool>(
         }
         i += R;
     }
-    while i < m && (i + 1) * out_stride <= out.len() {
+    while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
         let ar = &a[i * a_stride..i * a_stride + K];
         let sa = a_scale[i];
         let orow = &mut out[i * out_stride..i * out_stride + n];

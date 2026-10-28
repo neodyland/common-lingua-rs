@@ -1,4 +1,6 @@
-use crate::fp32::math::{gelu, layer_norm_into, silu_inplace, softmax_rows};
+use crate::fp32::math::{gelu, silu_inplace, softmax_rows};
+
+const LN_EPS: f32 = 1e-5;
 use crate::global::{
     D, FFN, HALF, HEAD_DIM, KERNEL, MAX_LEN, N_ATTN, N_CONV, N_HEADS, NGRAM_BUCKETS, NGRAM_DIM,
     PAD, Q_SCALE,
@@ -23,14 +25,34 @@ impl Norm {
         if start >= end {
             return;
         }
-        layer_norm_into(
-            &src[start * D..end * D],
-            &mut dst[start * D..end * D],
-            end - start,
-            D,
-            &self.weight,
-            &self.bias,
-        );
+        for r in start..end {
+            let base = r * D;
+            let row = &src[base..base + D];
+            let out = &mut dst[base..base + D];
+            let mut a4 = [0.0f32; 4];
+            let mut c = 0;
+            while c + 4 <= D {
+                for t in 0..4 {
+                    a4[t] += row[c + t];
+                }
+                c += 4;
+            }
+            let mean = ((a4[0] + a4[1]) + (a4[2] + a4[3])) / D as f32;
+            let mut v4 = [0.0f32; 4];
+            let mut c = 0;
+            while c + 4 <= D {
+                for t in 0..4 {
+                    let diff = row[c + t] - mean;
+                    v4[t] = diff.mul_add(diff, v4[t]);
+                }
+                c += 4;
+            }
+            let var = ((v4[0] + v4[1]) + (v4[2] + v4[3])) / D as f32;
+            let inv = 1.0 / (var + LN_EPS).sqrt();
+            for i in 0..D {
+                out[i] = (row[i] - mean).mul_add(inv * self.weight[i], self.bias[i]);
+            }
+        }
     }
 }
 
@@ -187,7 +209,7 @@ impl Scratch {
             hs: vec![0.0f32; MAX_LEN],
             conv: vec![0.0f32; MAX_LEN * D],
             buf: vec![0.0f32; MAX_LEN * 2 * FFN],
-            bufq: vec![0i8; MAX_LEN * 2 * FFN],
+            bufq: vec![0i8; MAX_LEN * FFN],
             bufs: vec![0.0f32; MAX_LEN],
             ngram: vec![0.0f32; MAX_LEN * NGRAM_DIM],
             nq: vec![0i8; MAX_LEN * NGRAM_DIM],
@@ -264,15 +286,15 @@ impl Scratch {
         quant_rows(
             &self.buf[start * n..start * n + len * n],
             n,
-            &mut self.bufq[start * n..start * n + len * n],
-            n,
+            &mut self.bufq[start * half..start * half + len * half],
+            half,
             &mut self.bufs[start..end],
             len,
-            n,
+            half,
         );
         ffn.down.run(
-            &self.bufq[start * n..],
-            n,
+            &self.bufq[start * half..],
+            half,
             &self.bufs[start..],
             len,
             &mut self.x[start * D..],
@@ -352,28 +374,45 @@ impl Scratch {
     fn softmax_quant(&mut self, rows: usize) {
         for r in 0..rows {
             let row = &mut self.scores[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
-            let mut mx = f32::NEG_INFINITY;
-            for v in row.iter() {
-                if *v > mx {
-                    mx = *v;
+            let mut m4 = [f32::NEG_INFINITY; 4];
+            let mut c = 0;
+            while c + 4 <= MAX_LEN {
+                for t in 0..4 {
+                    let v = row[c + t];
+                    if v > m4[t] {
+                        m4[t] = v;
+                    }
+                }
+                c += 4;
+            }
+            let mut mx = m4[0];
+            for t in 1..4 {
+                if m4[t] > mx {
+                    mx = m4[t];
                 }
             }
-            let mut sum = 0.0f32;
-            for v in row.iter_mut() {
-                let d = (*v - mx) * 1.442695;
-                let nn = (d + 12582912.0) - 12582912.0;
-                let rr = d - nn;
-                let mut pp = 0.0013888889;
-                pp = rr.mul_add(pp, 0.008333334);
-                pp = rr.mul_add(pp, 0.041666668);
-                pp = rr.mul_add(pp, 0.16666667);
-                pp = rr.mul_add(pp, 0.5);
-                pp = rr.mul_add(pp, 1.0);
-                pp = rr.mul_add(pp, 1.0);
-                let e = pp * f32::from_bits(((nn as i32 + 127) << 23) as u32);
-                *v = e;
-                sum += e;
+            let mut s4 = [0.0f32; 4];
+            let mut c = 0;
+            while c + 4 <= MAX_LEN {
+                for t in 0..4 {
+                    let v = row[c + t];
+                    let d = (v - mx) * 1.442695;
+                    let nn = (d + 12582912.0) - 12582912.0;
+                    let rr = d - nn;
+                    let mut pp = 0.0013888889;
+                    pp = rr.mul_add(pp, 0.008333334);
+                    pp = rr.mul_add(pp, 0.041666668);
+                    pp = rr.mul_add(pp, 0.16666667);
+                    pp = rr.mul_add(pp, 0.5);
+                    pp = rr.mul_add(pp, 1.0);
+                    pp = rr.mul_add(pp, 1.0);
+                    let e = pp * f32::from_bits(((nn as i32 + 127) << 23) as u32);
+                    row[c + t] = e;
+                    s4[t] += e;
+                }
+                c += 4;
             }
+            let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
             let scale = 127.0 / sum;
             let dst = &mut self.sq[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
             for (d, v) in dst.iter_mut().zip(row.iter()) {
@@ -385,7 +424,20 @@ impl Scratch {
 
     fn quant_v(&mut self, voff: usize) {
         let mut mx = [0.0f32; HEAD_DIM];
-        for pos in 0..MAX_LEN {
+        let mut pos = 0;
+        while pos + 4 <= MAX_LEN {
+            for t in 0..4 {
+                let src = &self.qkv[(pos + t) * 3 * D + voff..(pos + t) * 3 * D + voff + HEAD_DIM];
+                for (j, v) in src.iter().enumerate() {
+                    let a = v.abs();
+                    if a > mx[j] {
+                        mx[j] = a;
+                    }
+                }
+            }
+            pos += 4;
+        }
+        while pos < MAX_LEN {
             let src = &self.qkv[pos * 3 * D + voff..pos * 3 * D + voff + HEAD_DIM];
             for (j, v) in src.iter().enumerate() {
                 let a = v.abs();
@@ -393,6 +445,7 @@ impl Scratch {
                     mx[j] = a;
                 }
             }
+            pos += 1;
         }
         let mut inv = [0.0f32; HEAD_DIM];
         for j in 0..HEAD_DIM {
