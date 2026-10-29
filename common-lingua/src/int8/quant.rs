@@ -425,81 +425,21 @@ fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
                 let w1 = w_scale[j + 1];
                 let w2 = w_scale[j + 2];
                 let g0 = dot3x3s::<S, K>(simd, a0, a1, a2, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r0[j..],
-                    s0 * w0 * g0[0] as f32,
-                    s0 * w1 * g0[1] as f32,
-                    s0 * w2 * g0[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r1[j..],
-                    s1 * w0 * g0[3] as f32,
-                    s1 * w1 * g0[4] as f32,
-                    s1 * w2 * g0[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r2[j..],
-                    s2 * w0 * g0[6] as f32,
-                    s2 * w1 * g0[7] as f32,
-                    s2 * w2 * g0[8] as f32,
-                );
+                put3::<ACC>(&mut r0[j..], s0 * w0 * g0[0] as f32, s0 * w1 * g0[1] as f32, s0 * w2 * g0[2] as f32);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * g0[3] as f32, s1 * w1 * g0[4] as f32, s1 * w2 * g0[5] as f32);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * g0[6] as f32, s2 * w1 * g0[7] as f32, s2 * w2 * g0[8] as f32);
                 let g1 = dot3x3s::<S, K>(simd, a3, a4, a5, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r3[j..],
-                    s3 * w0 * g1[0] as f32,
-                    s3 * w1 * g1[1] as f32,
-                    s3 * w2 * g1[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r4[j..],
-                    s4 * w0 * g1[3] as f32,
-                    s4 * w1 * g1[4] as f32,
-                    s4 * w2 * g1[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r5[j..],
-                    s5 * w0 * g1[6] as f32,
-                    s5 * w1 * g1[7] as f32,
-                    s5 * w2 * g1[8] as f32,
-                );
+                put3::<ACC>(&mut r3[j..], s3 * w0 * g1[0] as f32, s3 * w1 * g1[1] as f32, s3 * w2 * g1[2] as f32);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * g1[3] as f32, s4 * w1 * g1[4] as f32, s4 * w2 * g1[5] as f32);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * g1[6] as f32, s5 * w1 * g1[7] as f32, s5 * w2 * g1[8] as f32);
                 let g2 = dot3x3s::<S, K>(simd, a6, a7, a8, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r6[j..],
-                    s6 * w0 * g2[0] as f32,
-                    s6 * w1 * g2[1] as f32,
-                    s6 * w2 * g2[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r7[j..],
-                    s7 * w0 * g2[3] as f32,
-                    s7 * w1 * g2[4] as f32,
-                    s7 * w2 * g2[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r8[j..],
-                    s8 * w0 * g2[6] as f32,
-                    s8 * w1 * g2[7] as f32,
-                    s8 * w2 * g2[8] as f32,
-                );
+                put3::<ACC>(&mut r6[j..], s6 * w0 * g2[0] as f32, s6 * w1 * g2[1] as f32, s6 * w2 * g2[2] as f32);
+                put3::<ACC>(&mut r7[j..], s7 * w0 * g2[3] as f32, s7 * w1 * g2[4] as f32, s7 * w2 * g2[5] as f32);
+                put3::<ACC>(&mut r8[j..], s8 * w0 * g2[6] as f32, s8 * w1 * g2[7] as f32, s8 * w2 * g2[8] as f32);
                 let g3 = dot3x3s::<S, K>(simd, a9, a10, a11, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r9[j..],
-                    s9 * w0 * g3[0] as f32,
-                    s9 * w1 * g3[1] as f32,
-                    s9 * w2 * g3[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r10[j..],
-                    s10 * w0 * g3[3] as f32,
-                    s10 * w1 * g3[4] as f32,
-                    s10 * w2 * g3[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r11[j..],
-                    s11 * w0 * g3[6] as f32,
-                    s11 * w1 * g3[7] as f32,
-                    s11 * w2 * g3[8] as f32,
-                );
+                put3::<ACC>(&mut r9[j..], s9 * w0 * g3[0] as f32, s9 * w1 * g3[1] as f32, s9 * w2 * g3[2] as f32);
+                put3::<ACC>(&mut r10[j..], s10 * w0 * g3[3] as f32, s10 * w1 * g3[4] as f32, s10 * w2 * g3[5] as f32);
+                put3::<ACC>(&mut r11[j..], s11 * w0 * g3[6] as f32, s11 * w1 * g3[7] as f32, s11 * w2 * g3[8] as f32);
                 j += 3;
             }
             while j < jend {
@@ -568,81 +508,21 @@ fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
                 let w1 = w_scale[j + 1];
                 let w2 = w_scale[j + 2];
                 let g0 = dot3x3s::<S, K>(simd, a0, a1, a2, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r0[j..],
-                    s0 * w0 * g0[0] as f32,
-                    s0 * w1 * g0[1] as f32,
-                    s0 * w2 * g0[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r1[j..],
-                    s1 * w0 * g0[3] as f32,
-                    s1 * w1 * g0[4] as f32,
-                    s1 * w2 * g0[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r2[j..],
-                    s2 * w0 * g0[6] as f32,
-                    s2 * w1 * g0[7] as f32,
-                    s2 * w2 * g0[8] as f32,
-                );
+                put3::<ACC>(&mut r0[j..], s0 * w0 * g0[0] as f32, s0 * w1 * g0[1] as f32, s0 * w2 * g0[2] as f32);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * g0[3] as f32, s1 * w1 * g0[4] as f32, s1 * w2 * g0[5] as f32);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * g0[6] as f32, s2 * w1 * g0[7] as f32, s2 * w2 * g0[8] as f32);
                 let g1 = dot3x3s::<S, K>(simd, a3, a4, a5, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r3[j..],
-                    s3 * w0 * g1[0] as f32,
-                    s3 * w1 * g1[1] as f32,
-                    s3 * w2 * g1[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r4[j..],
-                    s4 * w0 * g1[3] as f32,
-                    s4 * w1 * g1[4] as f32,
-                    s4 * w2 * g1[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r5[j..],
-                    s5 * w0 * g1[6] as f32,
-                    s5 * w1 * g1[7] as f32,
-                    s5 * w2 * g1[8] as f32,
-                );
+                put3::<ACC>(&mut r3[j..], s3 * w0 * g1[0] as f32, s3 * w1 * g1[1] as f32, s3 * w2 * g1[2] as f32);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * g1[3] as f32, s4 * w1 * g1[4] as f32, s4 * w2 * g1[5] as f32);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * g1[6] as f32, s5 * w1 * g1[7] as f32, s5 * w2 * g1[8] as f32);
                 let g2 = dot3x3s::<S, K>(simd, a6, a7, a8, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r6[j..],
-                    s6 * w0 * g2[0] as f32,
-                    s6 * w1 * g2[1] as f32,
-                    s6 * w2 * g2[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r7[j..],
-                    s7 * w0 * g2[3] as f32,
-                    s7 * w1 * g2[4] as f32,
-                    s7 * w2 * g2[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r8[j..],
-                    s8 * w0 * g2[6] as f32,
-                    s8 * w1 * g2[7] as f32,
-                    s8 * w2 * g2[8] as f32,
-                );
+                put3::<ACC>(&mut r6[j..], s6 * w0 * g2[0] as f32, s6 * w1 * g2[1] as f32, s6 * w2 * g2[2] as f32);
+                put3::<ACC>(&mut r7[j..], s7 * w0 * g2[3] as f32, s7 * w1 * g2[4] as f32, s7 * w2 * g2[5] as f32);
+                put3::<ACC>(&mut r8[j..], s8 * w0 * g2[6] as f32, s8 * w1 * g2[7] as f32, s8 * w2 * g2[8] as f32);
                 let g3 = dot3x3s::<S, K>(simd, a9, a10, a11, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r9[j..],
-                    s9 * w0 * g3[0] as f32,
-                    s9 * w1 * g3[1] as f32,
-                    s9 * w2 * g3[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r10[j..],
-                    s10 * w0 * g3[3] as f32,
-                    s10 * w1 * g3[4] as f32,
-                    s10 * w2 * g3[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r11[j..],
-                    s11 * w0 * g3[6] as f32,
-                    s11 * w1 * g3[7] as f32,
-                    s11 * w2 * g3[8] as f32,
-                );
+                put3::<ACC>(&mut r9[j..], s9 * w0 * g3[0] as f32, s9 * w1 * g3[1] as f32, s9 * w2 * g3[2] as f32);
+                put3::<ACC>(&mut r10[j..], s10 * w0 * g3[3] as f32, s10 * w1 * g3[4] as f32, s10 * w2 * g3[5] as f32);
+                put3::<ACC>(&mut r11[j..], s11 * w0 * g3[6] as f32, s11 * w1 * g3[7] as f32, s11 * w2 * g3[8] as f32);
                 j += 3;
             }
             while j < jend {
@@ -861,6 +741,12 @@ fn dot3x3<const K: usize>(
 }
 
 #[inline(always)]
+fn keep<S: fearless_simd::Simd>(simd: S, s: &mut fearless_simd::i32x4<S>, t: fearless_simd::i16x8<S>) {
+    let (lo, hi) = simd.widen_i16x8(t);
+    *s = simd.add_i32x4(simd.add_i32x4(*s, lo), hi);
+}
+
+#[inline(always)]
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
     a0: &[i8],
@@ -879,70 +765,75 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     let mut s6 = s0;
     let mut s7 = s0;
     let mut s8 = s0;
+    let mut t0 = simd.splat_i16x8(0);
+    let mut t1 = t0;
+    let mut t2 = t0;
+    let mut t3 = t0;
+    let mut t4 = t0;
+    let mut t5 = t0;
+    let mut t6 = t0;
+    let mut t7 = t0;
+    let mut t8 = t0;
     let mut l = 0;
-    while l + 16 <= 0 {
+    let mut sub = 0;
+    while l + 16 <= K {
         let (x0, y0) = simd.widen_i8x16(i8x16::from_slice(simd, &b0[l..l + 16]));
         let (x1, y1) = simd.widen_i8x16(i8x16::from_slice(simd, &b1[l..l + 16]));
         let (x2, y2) = simd.widen_i8x16(i8x16::from_slice(simd, &b2[l..l + 16]));
         let (p0, p1) = simd.widen_i8x16(i8x16::from_slice(simd, &a0[l..l + 16]));
         let (p2, p3) = simd.widen_i8x16(i8x16::from_slice(simd, &a1[l..l + 16]));
         let (p4, p5) = simd.widen_i8x16(i8x16::from_slice(simd, &a2[l..l + 16]));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y0));
-        s0 = simd.add_i32x4(
-            simd.add_i32x4(s0, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y1));
-        s1 = simd.add_i32x4(
-            simd.add_i32x4(s1, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y2));
-        s2 = simd.add_i32x4(
-            simd.add_i32x4(s2, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y0));
-        s3 = simd.add_i32x4(
-            simd.add_i32x4(s3, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y1));
-        s4 = simd.add_i32x4(
-            simd.add_i32x4(s4, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y2));
-        s5 = simd.add_i32x4(
-            simd.add_i32x4(s5, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y0));
-        s6 = simd.add_i32x4(
-            simd.add_i32x4(s6, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y1));
-        s7 = simd.add_i32x4(
-            simd.add_i32x4(s7, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y2));
-        s8 = simd.add_i32x4(
-            simd.add_i32x4(s8, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
+        let m00 = simd.add_i16x8(simd.mul_i16x8(p0, x0), simd.mul_i16x8(p1, y0));
+        let m01 = simd.add_i16x8(simd.mul_i16x8(p0, x1), simd.mul_i16x8(p1, y1));
+        let m02 = simd.add_i16x8(simd.mul_i16x8(p0, x2), simd.mul_i16x8(p1, y2));
+        let m10 = simd.add_i16x8(simd.mul_i16x8(p2, x0), simd.mul_i16x8(p3, y0));
+        let m11 = simd.add_i16x8(simd.mul_i16x8(p2, x1), simd.mul_i16x8(p3, y1));
+        let m12 = simd.add_i16x8(simd.mul_i16x8(p2, x2), simd.mul_i16x8(p3, y2));
+        let m20 = simd.add_i16x8(simd.mul_i16x8(p4, x0), simd.mul_i16x8(p5, y0));
+        let m21 = simd.add_i16x8(simd.mul_i16x8(p4, x1), simd.mul_i16x8(p5, y1));
+        let m22 = simd.add_i16x8(simd.mul_i16x8(p4, x2), simd.mul_i16x8(p5, y2));
+        t0 = simd.add_i16x8(t0, m00);
+        t1 = simd.add_i16x8(t1, m01);
+        t2 = simd.add_i16x8(t2, m02);
+        t3 = simd.add_i16x8(t3, m10);
+        t4 = simd.add_i16x8(t4, m11);
+        t5 = simd.add_i16x8(t5, m12);
+        t6 = simd.add_i16x8(t6, m20);
+        t7 = simd.add_i16x8(t7, m21);
+        t8 = simd.add_i16x8(t8, m22);
         l += 16;
+        sub += 1;
+        if sub == 1 {
+            sub = 0;
+            keep::<S>(simd, &mut s0, t0);
+            keep::<S>(simd, &mut s1, t1);
+            keep::<S>(simd, &mut s2, t2);
+            keep::<S>(simd, &mut s3, t3);
+            keep::<S>(simd, &mut s4, t4);
+            keep::<S>(simd, &mut s5, t5);
+            keep::<S>(simd, &mut s6, t6);
+            keep::<S>(simd, &mut s7, t7);
+            keep::<S>(simd, &mut s8, t8);
+            t0 = simd.splat_i16x8(0);
+            t1 = t0;
+            t2 = t0;
+            t3 = t0;
+            t4 = t0;
+            t5 = t0;
+            t6 = t0;
+            t7 = t0;
+            t8 = t0;
+        }
     }
+    keep::<S>(simd, &mut s0, t0);
+    keep::<S>(simd, &mut s1, t1);
+    keep::<S>(simd, &mut s2, t2);
+    keep::<S>(simd, &mut s3, t3);
+    keep::<S>(simd, &mut s4, t4);
+    keep::<S>(simd, &mut s5, t5);
+    keep::<S>(simd, &mut s6, t6);
+    keep::<S>(simd, &mut s7, t7);
+    keep::<S>(simd, &mut s8, t8);
     let mut r = [
         s0.reduce_sum(),
         s1.reduce_sum(),
