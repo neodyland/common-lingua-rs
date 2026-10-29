@@ -1,4 +1,5 @@
 use fearless_simd::SimdBase;
+use fearless_simd::i8x16;
 
 use crate::ckpt::{Checkpoint, STResult};
 
@@ -111,7 +112,7 @@ pub fn gemm<const K: usize, const ACC: bool, const MANUALSIMD: bool>(
     out: &mut [f32],
     out_stride: usize,
 ) {
-    if K >= 256 && MANUALSIMD {
+    if K >= 64 && MANUALSIMD {
         fearless_simd::dispatch!(
             fearless_simd::Level::new(),
             simd => gemm_jb::<K, ACC, _>(simd, a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, JB_LOCK)
@@ -832,6 +833,16 @@ fn dot3x3<const K: usize>(
 }
 
 #[inline(always)]
+fn acc<S: fearless_simd::Simd>(
+    simd: S,
+    s: fearless_simd::i32x4<S>,
+    x: fearless_simd::i16x8<S>,
+    y: fearless_simd::i16x8<S>,
+) -> fearless_simd::i32x4<S> {
+    let (lo, hi) = simd.widen_i16x8(simd.add_i16x8(x, y));
+    simd.add_i32x4(simd.add_i32x4(s, lo), hi)
+}
+
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
     a0: &[i8],
@@ -841,16 +852,43 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     b1: &[i8],
     b2: &[i8],
 ) -> [i32; 9] {
-    let s0 = simd.splat_i32x4(0);
-    let s1 = s0;
-    let s2 = s0;
-    let s3 = s0;
-    let s4 = s0;
-    let s5 = s0;
-    let s6 = s0;
-    let s7 = s0;
-    let s8 = s0;
+    let mut s0 = simd.splat_i32x4(0);
+    let mut s1 = s0;
+    let mut s2 = s0;
+    let mut s3 = s0;
+    let mut s4 = s0;
+    let mut s5 = s0;
+    let mut s6 = s0;
+    let mut s7 = s0;
+    let mut s8 = s0;
     let mut l = 0;
+    while l + 16 <= K {
+        let vb0 = i8x16::from_slice(simd, &b0[l..l + 16]);
+        let vb1 = i8x16::from_slice(simd, &b1[l..l + 16]);
+        let vb2 = i8x16::from_slice(simd, &b2[l..l + 16]);
+        let va0 = i8x16::from_slice(simd, &a0[l..l + 16]);
+        let (x, y) = simd.widening_mul_i8x16(va0, vb0);
+        s0 = acc(simd, s0, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va0, vb1);
+        s1 = acc(simd, s1, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va0, vb2);
+        s2 = acc(simd, s2, x, y);
+        let va1 = i8x16::from_slice(simd, &a1[l..l + 16]);
+        let (x, y) = simd.widening_mul_i8x16(va1, vb0);
+        s3 = acc(simd, s3, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va1, vb1);
+        s4 = acc(simd, s4, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va1, vb2);
+        s5 = acc(simd, s5, x, y);
+        let va2 = i8x16::from_slice(simd, &a2[l..l + 16]);
+        let (x, y) = simd.widening_mul_i8x16(va2, vb0);
+        s6 = acc(simd, s6, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va2, vb1);
+        s7 = acc(simd, s7, x, y);
+        let (x, y) = simd.widening_mul_i8x16(va2, vb2);
+        s8 = acc(simd, s8, x, y);
+        l += 16;
+    }
     let mut r = [
         s0.reduce_sum(),
         s1.reduce_sum(),

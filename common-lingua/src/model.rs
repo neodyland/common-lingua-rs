@@ -5,6 +5,7 @@ use crate::global::{
 };
 use crate::math::{gelu, softmax_rows};
 use crate::quant::{QMat, gemm, quant_row, quant_rows};
+use std::cell::RefCell;
 use std::f32::consts::{LN_2, LOG2_E};
 use std::fmt::Display;
 #[cfg(not(feature = "wasm"))]
@@ -643,6 +644,7 @@ pub struct Model {
     head3w: Vec<f32>,
     head3_bias: Vec<f32>,
     pub profile: Profile,
+    scratch: RefCell<Scratch>,
 }
 
 impl Model {
@@ -669,29 +671,29 @@ impl Model {
             head3w: ckpt.f32("head.3.weight".to_string())?.0,
             head3_bias: ckpt.f32("head.3.bias".to_string())?.0,
             profile: Profile::default(),
+            scratch: RefCell::new(Scratch::new()),
         })
     }
     pub fn tune(&mut self) {
-        let mut ids = vec![PAD; MAX_LEN];
-        ids[0] = 0;
-        ids[0] = 1;
-        ids[0] = 2;
-        ids[0] = 3;
+        let mut ids = vec![0usize; MAX_LEN];
+        for (pos, id) in ids.iter_mut().enumerate() {
+            *id = 65 + (pos % 26);
+        }
+        self.profile.manual_simd = true;
+        self.predict(&ids);
+        self.profile.manual_simd = false;
+        self.predict(&ids);
         self.profile.manual_simd = true;
         let now = Instant::now();
-        for _ in 0..10 {
-            self.predict(&ids);
-        }
-        let ms_manual = now.elapsed().as_millis();
+        self.predict(&ids);
+        self.predict(&ids);
+        let m = now.elapsed().as_micros();
         self.profile.manual_simd = false;
         let now = Instant::now();
-        for _ in 0..10 {
-            self.predict(&ids);
-        }
-        let ms_auto = now.elapsed().as_millis();
-        if ms_auto < ms_manual {
-            self.profile.manual_simd = false;
-        }
+        self.predict(&ids);
+        self.predict(&ids);
+        let a = now.elapsed().as_micros();
+        self.profile.manual_simd = m <= a;
     }
 
     fn ngram_into(&self, byte_ids: &[usize], start: usize, end: usize, dst: &mut [f32]) {
@@ -801,7 +803,7 @@ impl Model {
     }
 
     pub fn predict(&self, byte_ids: &[usize]) -> Vec<f32> {
-        let mut s = Scratch::new();
+        let mut s = self.scratch.borrow_mut();
         if self.profile.manual_simd {
             self.predict_with::<true>(byte_ids, &mut s)
         } else {
