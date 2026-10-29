@@ -12,3 +12,5 @@ categories.workspace = true
 
 [dependencies]
 common-lingua-macros = { path = "../common-lingua-macros" , version = "0.1.0" }
+fearless_simd = "1.2.0"
+fearless_simd_macros = "0.1.0"
