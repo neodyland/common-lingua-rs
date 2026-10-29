@@ -1,6 +1,7 @@
 use crate::fp32::math::{gelu, softmax_rows};
 
-fn silu_fast(x: &mut [f32]) {    for v in x.iter_mut() {
+fn silu_fast(x: &mut [f32]) {
+    for v in x.iter_mut() {
         let d = -*v * 1.442695;
         let nn = (d + 12582912.0) - 12582912.0;
         let rr = d - nn;
@@ -22,7 +23,7 @@ use crate::global::{
     D, FFN, HALF, HEAD_DIM, KERNEL, MAX_LEN, N_ATTN, N_CONV, N_HEADS, NGRAM_BUCKETS, NGRAM_DIM,
     PAD, Q_SCALE,
 };
-use crate::int8::quant::{gemm, quant_row, quant_rows, QMat};
+use crate::int8::quant::{QMat, gemm, quant_row, quant_rows};
 use crate::weights::load_weight;
 
 struct Norm {
@@ -486,7 +487,7 @@ impl Scratch {
                 .qkv
                 .run(&self.hq, D, &self.hs, MAX_LEN, &mut self.qkv, 3 * D, false);
         } else {
-        quant_rows(
+            quant_rows(
                 &self.h[0..cut * D],
                 D,
                 &mut self.hq[0..cut * D],
@@ -523,7 +524,8 @@ impl Scratch {
                 false,
             );
             for pos in cut..510 {
-                self.qkv.copy_within(stable * 3 * D..stable * 3 * D + 3 * D, pos * 3 * D);
+                self.qkv
+                    .copy_within(stable * 3 * D..stable * 3 * D + 3 * D, pos * 3 * D);
             }
         }
         rope.forward(&mut self.qkv);
@@ -535,11 +537,13 @@ impl Scratch {
 
             for pos in 0..rows {
                 let src = &self.qkv[pos * 3 * D + qoff..pos * 3 * D + qoff + HEAD_DIM];
-                self.qs[pos] = quant_row(src, &mut self.qq[pos * HEAD_DIM..pos * HEAD_DIM + HEAD_DIM]);
+                self.qs[pos] =
+                    quant_row(src, &mut self.qq[pos * HEAD_DIM..pos * HEAD_DIM + HEAD_DIM]);
             }
             for pos in 0..MAX_LEN {
                 let src = &self.qkv[pos * 3 * D + koff..pos * 3 * D + koff + HEAD_DIM];
-                self.ks[pos] = quant_row(src, &mut self.kq[pos * HEAD_DIM..pos * HEAD_DIM + HEAD_DIM]);
+                self.ks[pos] =
+                    quant_row(src, &mut self.kq[pos * HEAD_DIM..pos * HEAD_DIM + HEAD_DIM]);
             }
 
             let mut rb = 0;
@@ -644,8 +648,9 @@ impl Model {
                 0
             };
             let bucket = (b0 * 257 * 257 + b1 * 257 + b2) % NGRAM_BUCKETS;
-            dst[pos * NGRAM_DIM..pos * NGRAM_DIM + NGRAM_DIM]
-                .copy_from_slice(&self.ngram_embed[bucket * NGRAM_DIM..bucket * NGRAM_DIM + NGRAM_DIM]);
+            dst[pos * NGRAM_DIM..pos * NGRAM_DIM + NGRAM_DIM].copy_from_slice(
+                &self.ngram_embed[bucket * NGRAM_DIM..bucket * NGRAM_DIM + NGRAM_DIM],
+            );
         }
     }
 
@@ -672,17 +677,12 @@ impl Model {
                 s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
             }
         }
-        self.ngram_into(byte_ids, 0, stop, &mut s.ngram);        if !full {
+        self.ngram_into(byte_ids, 0, stop, &mut s.ngram);
+        if !full {
             self.ngram_into(byte_ids, 510, MAX_LEN, &mut s.ngram);
         }
         quant_rows(
-            &s.ngram,
-            NGRAM_DIM,
-            &mut s.nq,
-            NGRAM_DIM,
-            &mut s.ns,
-            stop,
-            NGRAM_DIM,
+            &s.ngram, NGRAM_DIM, &mut s.nq, NGRAM_DIM, &mut s.ns, stop, NGRAM_DIM,
         );
         self.ngram_proj
             .run(&s.nq, NGRAM_DIM, &s.ns, stop, &mut s.x, D, true);
