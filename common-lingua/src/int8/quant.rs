@@ -741,6 +741,12 @@ fn dot3x3<const K: usize>(
 }
 
 #[inline(always)]
+fn keep<S: fearless_simd::Simd>(simd: S, s: &mut fearless_simd::i32x4<S>, t: fearless_simd::i16x8<S>) {
+    let (lo, hi) = simd.widen_i16x8(t);
+    *s = simd.add_i32x4(simd.add_i32x4(*s, lo), hi);
+}
+
+#[inline(always)]
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
     a0: &[i8],
@@ -767,33 +773,15 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
         let (p0, p1) = simd.widen_i8x16(i8x16::from_slice(simd, &a0[l..l + 16]));
         let (p2, p3) = simd.widen_i8x16(i8x16::from_slice(simd, &a1[l..l + 16]));
         let (p4, p5) = simd.widen_i8x16(i8x16::from_slice(simd, &a2[l..l + 16]));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y0));
-        s0 = simd.add_i32x4(simd.add_i32x4(s0, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y1));
-        s1 = simd.add_i32x4(simd.add_i32x4(s1, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y2));
-        s2 = simd.add_i32x4(simd.add_i32x4(s2, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y0));
-        s3 = simd.add_i32x4(simd.add_i32x4(s3, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y1));
-        s4 = simd.add_i32x4(simd.add_i32x4(s4, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y2));
-        s5 = simd.add_i32x4(simd.add_i32x4(s5, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y0));
-        s6 = simd.add_i32x4(simd.add_i32x4(s6, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y1));
-        s7 = simd.add_i32x4(simd.add_i32x4(s7, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y2));
-        s8 = simd.add_i32x4(simd.add_i32x4(s8, t), simd.add_i32x4(u, simd.add_i32x4(t2, u2)));
+        keep::<S>(simd, &mut s0, simd.add_i16x8(simd.mul_i16x8(p0, x0), simd.mul_i16x8(p1, y0)));
+        keep::<S>(simd, &mut s1, simd.add_i16x8(simd.mul_i16x8(p0, x1), simd.mul_i16x8(p1, y1)));
+        keep::<S>(simd, &mut s2, simd.add_i16x8(simd.mul_i16x8(p0, x2), simd.mul_i16x8(p1, y2)));
+        keep::<S>(simd, &mut s3, simd.add_i16x8(simd.mul_i16x8(p2, x0), simd.mul_i16x8(p3, y0)));
+        keep::<S>(simd, &mut s4, simd.add_i16x8(simd.mul_i16x8(p2, x1), simd.mul_i16x8(p3, y1)));
+        keep::<S>(simd, &mut s5, simd.add_i16x8(simd.mul_i16x8(p2, x2), simd.mul_i16x8(p3, y2)));
+        keep::<S>(simd, &mut s6, simd.add_i16x8(simd.mul_i16x8(p4, x0), simd.mul_i16x8(p5, y0)));
+        keep::<S>(simd, &mut s7, simd.add_i16x8(simd.mul_i16x8(p4, x1), simd.mul_i16x8(p5, y1)));
+        keep::<S>(simd, &mut s8, simd.add_i16x8(simd.mul_i16x8(p4, x2), simd.mul_i16x8(p5, y2)));
         l += 16;
     }
     let mut r = [
