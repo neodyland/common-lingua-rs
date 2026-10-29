@@ -646,6 +646,41 @@ fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
             }
             i += 8;
         }
+        while i + 3 <= m && (i + 3) * out_stride <= out.len() && (i + 3) <= a_scale.len() {
+            let a0 = &a[i * a_stride..i * a_stride + K];
+            let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
+            let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
+            let sa0 = a_scale[i];
+            let sa1 = a_scale[i + 1];
+            let sa2 = a_scale[i + 2];
+            let base = i * out_stride;
+            let (r0, rest) = out[base..].split_at_mut(out_stride);
+            let (r1, rest) = rest.split_at_mut(out_stride);
+            let (r2, _) = rest.split_at_mut(out_stride);
+            let mut j = j0;
+            while j + 3 <= jend {
+                let b0 = &w[j * K..j * K + K];
+                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
+                let b2 = &w[(j + 2) * K..(j + 2) * K + K];
+                let w0 = w_scale[j];
+                let w1 = w_scale[j + 1];
+                let w2 = w_scale[j + 2];
+                let g = dot3x3s::<S, K>(simd, a0, a1, a2, b0, b1, b2);
+                put3::<ACC>(&mut r0[j..], sa0 * w0 * g[0] as f32, sa0 * w1 * g[1] as f32, sa0 * w2 * g[2] as f32);
+                put3::<ACC>(&mut r1[j..], sa1 * w0 * g[3] as f32, sa1 * w1 * g[4] as f32, sa1 * w2 * g[5] as f32);
+                put3::<ACC>(&mut r2[j..], sa2 * w0 * g[6] as f32, sa2 * w1 * g[7] as f32, sa2 * w2 * g[8] as f32);
+                j += 3;
+            }
+            while j < jend {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                put::<ACC>(&mut r0[j..], sa0 * w0 * dot::<K>(a0, b0) as f32);
+                put::<ACC>(&mut r1[j..], sa1 * w0 * dot::<K>(a1, b0) as f32);
+                put::<ACC>(&mut r2[j..], sa2 * w0 * dot::<K>(a2, b0) as f32);
+                j += 1;
+            }
+            i += 3;
+        }
         while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
             let ar = &a[i * a_stride..i * a_stride + K];
             let sa = a_scale[i];
@@ -767,21 +802,30 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     let mut s8 = s0;
     let mut l = 0;
     while l + 16 <= K {
-        let (x0, y0) = simd.widen_i8x16(i8x16::from_slice(simd, &b0[l..l + 16]));
-        let (x1, y1) = simd.widen_i8x16(i8x16::from_slice(simd, &b1[l..l + 16]));
-        let (x2, y2) = simd.widen_i8x16(i8x16::from_slice(simd, &b2[l..l + 16]));
-        let (p0, p1) = simd.widen_i8x16(i8x16::from_slice(simd, &a0[l..l + 16]));
-        let (p2, p3) = simd.widen_i8x16(i8x16::from_slice(simd, &a1[l..l + 16]));
-        let (p4, p5) = simd.widen_i8x16(i8x16::from_slice(simd, &a2[l..l + 16]));
-        keep::<S>(simd, &mut s0, simd.add_i16x8(simd.mul_i16x8(p0, x0), simd.mul_i16x8(p1, y0)));
-        keep::<S>(simd, &mut s1, simd.add_i16x8(simd.mul_i16x8(p0, x1), simd.mul_i16x8(p1, y1)));
-        keep::<S>(simd, &mut s2, simd.add_i16x8(simd.mul_i16x8(p0, x2), simd.mul_i16x8(p1, y2)));
-        keep::<S>(simd, &mut s3, simd.add_i16x8(simd.mul_i16x8(p2, x0), simd.mul_i16x8(p3, y0)));
-        keep::<S>(simd, &mut s4, simd.add_i16x8(simd.mul_i16x8(p2, x1), simd.mul_i16x8(p3, y1)));
-        keep::<S>(simd, &mut s5, simd.add_i16x8(simd.mul_i16x8(p2, x2), simd.mul_i16x8(p3, y2)));
-        keep::<S>(simd, &mut s6, simd.add_i16x8(simd.mul_i16x8(p4, x0), simd.mul_i16x8(p5, y0)));
-        keep::<S>(simd, &mut s7, simd.add_i16x8(simd.mul_i16x8(p4, x1), simd.mul_i16x8(p5, y1)));
-        keep::<S>(simd, &mut s8, simd.add_i16x8(simd.mul_i16x8(p4, x2), simd.mul_i16x8(p5, y2)));
+        let va0 = i8x16::from_slice(simd, &a0[l..l + 16]);
+        let va1 = i8x16::from_slice(simd, &a1[l..l + 16]);
+        let va2 = i8x16::from_slice(simd, &a2[l..l + 16]);
+        let vb0 = i8x16::from_slice(simd, &b0[l..l + 16]);
+        let vb1 = i8x16::from_slice(simd, &b1[l..l + 16]);
+        let vb2 = i8x16::from_slice(simd, &b2[l..l + 16]);
+        let (m00, m01) = simd.widening_mul_i8x16(va0, vb0);
+        let (m02, m03) = simd.widening_mul_i8x16(va0, vb1);
+        let (m04, m05) = simd.widening_mul_i8x16(va0, vb2);
+        let (m10, m11) = simd.widening_mul_i8x16(va1, vb0);
+        let (m12, m13) = simd.widening_mul_i8x16(va1, vb1);
+        let (m14, m15) = simd.widening_mul_i8x16(va1, vb2);
+        let (m20, m21) = simd.widening_mul_i8x16(va2, vb0);
+        let (m22, m23) = simd.widening_mul_i8x16(va2, vb1);
+        let (m24, m25) = simd.widening_mul_i8x16(va2, vb2);
+        keep::<S>(simd, &mut s0, simd.add_i16x8(m00, m01));
+        keep::<S>(simd, &mut s1, simd.add_i16x8(m02, m03));
+        keep::<S>(simd, &mut s2, simd.add_i16x8(m04, m05));
+        keep::<S>(simd, &mut s3, simd.add_i16x8(m10, m11));
+        keep::<S>(simd, &mut s4, simd.add_i16x8(m12, m13));
+        keep::<S>(simd, &mut s5, simd.add_i16x8(m14, m15));
+        keep::<S>(simd, &mut s6, simd.add_i16x8(m20, m21));
+        keep::<S>(simd, &mut s7, simd.add_i16x8(m22, m23));
+        keep::<S>(simd, &mut s8, simd.add_i16x8(m24, m25));
         l += 16;
     }
     let mut r = [
