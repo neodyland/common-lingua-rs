@@ -9,11 +9,13 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[dependencies]
+fearless_simd.workspace = true
+fearless_simd_macros.workspace = true
+safetensors.workspace = true
+web-time = { workspace = true, optional = true }
 
 [features]
-simd = ["dep:fearless_simd", "dep:fearless_simd_macros"]
-
-[dependencies]
-common-lingua-macros = { path = "../common-lingua-macros" , version = "0.1.0" }
-fearless_simd = { version = "1.2.0", optional = true }
-fearless_simd_macros = { version = "0.1.0", optional = true }
+default = ["rust"]
+wasm = ["dep:web-time"]
+rust = []

@@ -14,9 +14,9 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-common-lingua = { path = "../common-lingua" }
+common-lingua = { path = "../common-lingua", features = ["wasm"], default-features = false }
 js-sys.workspace = true
 wasm-bindgen.workspace = true
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["--enable-bulk-memory-opt", "-O3", "--enable-nontrapping-float-to-int"]
+wasm-opt = ["--enable-bulk-memory-opt", "-O3", "--enable-nontrapping-float-to-int", "--enable-simd"]

@@ -10,4 +10,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = "0.29.0"
-common-lingua = { path = "../common-lingua" }
+common-lingua = { path = "../common-lingua", default-features = false }

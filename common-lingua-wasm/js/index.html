@@ -107,7 +107,9 @@
     <div id="out"></div>
 
     <script type="module">
-      import { detect } from "./common-lingua.js";
+      import { detect, load } from "./common-lingua.js";
+
+      load();
 
       const $in = document.getElementById("in");
       const $btn = document.getElementById("btn");

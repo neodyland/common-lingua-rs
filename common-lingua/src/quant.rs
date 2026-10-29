@@ -1,6 +1,6 @@
-use crate::weights::load_weight;
-#[cfg(feature = "simd")]
-use fearless_simd::{SimdBase, i8x16};
+use fearless_simd::SimdBase;
+
+use crate::ckpt::{Checkpoint, STResult};
 
 pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
     let n = src.len();
@@ -16,9 +16,9 @@ pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
         c += 4;
     }
     let mut mx = m4[0];
-    for t in 1..4 {
-        if m4[t] > mx {
-            mx = m4[t];
+    for m4_t in m4.iter().skip(1) {
+        if *m4_t > mx {
+            mx = *m4_t;
         }
     }
     while c < n {
@@ -63,40 +63,8 @@ pub fn quant_rows(
     }
 }
 
-pub fn quant_row_lsq(src: &[f32], dst: &mut [i8]) -> f32 {
-    let n = src.len();
-    let mut mx = 0.0f32;
-    for v in src.iter() {
-        let a = v.abs();
-        if a > mx {
-            mx = a;
-        }
-    }
-    if mx <= 0.0 {
-        dst.fill(0);
-        return 0.0;
-    }
-    let inv = 127.0 / mx;
-    let mut d1 = 0.0f32;
-    let mut d2 = 0.0f32;
-    for i in 0..n {
-        let q = (src[i] * inv).round() as i8;
-        dst[i] = q;
-        let qf = q as f32;
-        d1 += src[i] * qf;
-        d2 += qf * qf;
-    }
-    if d2 > 0.0 {
-        d1 / d2
-    } else {
-        mx * (1.0 / 127.0)
-    }
-}
-
 const R: usize = 8;
-#[cfg(feature = "simd")]
 const RJ: usize = 12;
-#[cfg(feature = "simd")]
 const JB_LOCK: usize = 84;
 
 #[inline(always)]
@@ -132,7 +100,7 @@ fn pair<const ACC: bool>(out: &mut [f32], j: usize, v0: f32, v1: f32) {
     }
 }
 
-pub fn gemm<const K: usize, const ACC: bool>(
+pub fn gemm<const K: usize, const ACC: bool, const MANUALSIMD: bool>(
     a: &[i8],
     a_stride: usize,
     a_scale: &[f32],
@@ -143,8 +111,7 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out: &mut [f32],
     out_stride: usize,
 ) {
-    #[cfg(feature = "simd")]
-    if K >= 256 {
+    if K >= 256 && MANUALSIMD {
         fearless_simd::dispatch!(
             fearless_simd::Level::new(),
             simd => gemm_jb::<K, ACC, _>(simd, a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, JB_LOCK)
@@ -154,218 +121,6 @@ pub fn gemm<const K: usize, const ACC: bool>(
     gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 3);
 }
 
-#[inline(never)]
-fn gemm_nb<const K: usize, const ACC: bool>(
-    a: &[i8],
-    a_stride: usize,
-    a_scale: &[f32],
-    m: usize,
-    w: &[i8],
-    w_scale: &[f32],
-    n: usize,
-    out: &mut [f32],
-    out_stride: usize,
-    nb: usize,
-) {
-    let mut i = 0;
-    while i + R <= m && (i + R) * out_stride <= out.len() && (i + R) <= a_scale.len() {
-        let a0 = &a[i * a_stride..i * a_stride + K];
-        let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
-        let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
-        let a3 = &a[(i + 3) * a_stride..(i + 3) * a_stride + K];
-        let a4 = &a[(i + 4) * a_stride..(i + 4) * a_stride + K];
-        let a5 = &a[(i + 5) * a_stride..(i + 5) * a_stride + K];
-        let a6 = &a[(i + 6) * a_stride..(i + 6) * a_stride + K];
-        let a7 = &a[(i + 7) * a_stride..(i + 7) * a_stride + K];
-        let base = i * out_stride;
-        let (r0, rest) = out[base..].split_at_mut(out_stride);
-        let (r1, rest) = rest.split_at_mut(out_stride);
-        let (r2, rest) = rest.split_at_mut(out_stride);
-        let (r3, rest) = rest.split_at_mut(out_stride);
-        let (r4, rest) = rest.split_at_mut(out_stride);
-        let (r5, rest) = rest.split_at_mut(out_stride);
-        let (r6, rest) = rest.split_at_mut(out_stride);
-        let (r7, _) = rest.split_at_mut(out_stride);
-        let s0 = a_scale[i];
-        let s1 = a_scale[i + 1];
-        let s2 = a_scale[i + 2];
-        let s3 = a_scale[i + 3];
-        let s4 = a_scale[i + 4];
-        let s5 = a_scale[i + 5];
-        let s6 = a_scale[i + 6];
-        let s7 = a_scale[i + 7];
-        let mut j = 0;
-        if nb == 1 {
-            while j < n {
-                let b0 = &w[j * K..j * K + K];
-                let w0 = w_scale[j];
-                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
-                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
-                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
-                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
-                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
-                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
-                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
-                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
-                put::<ACC>(&mut r0[j..], v0);
-                put::<ACC>(&mut r1[j..], v1);
-                put::<ACC>(&mut r2[j..], v2);
-                put::<ACC>(&mut r3[j..], v3);
-                put::<ACC>(&mut r4[j..], v4);
-                put::<ACC>(&mut r5[j..], v5);
-                put::<ACC>(&mut r6[j..], v6);
-                put::<ACC>(&mut r7[j..], v7);
-                j += 1;
-            }
-        } else if nb == 3 {
-            while j + 3 <= n {
-                let b0 = &w[j * K..j * K + K];
-                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
-                let b2 = &w[(j + 2) * K..(j + 2) * K + K];
-                let w0 = w_scale[j];
-                let w1 = w_scale[j + 1];
-                let w2 = w_scale[j + 2];
-                let g0 = dot3x3::<K>(a0, a1, a2, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r0[j..],
-                    s0 * w0 * g0[0] as f32,
-                    s0 * w1 * g0[1] as f32,
-                    s0 * w2 * g0[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r1[j..],
-                    s1 * w0 * g0[3] as f32,
-                    s1 * w1 * g0[4] as f32,
-                    s1 * w2 * g0[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r2[j..],
-                    s2 * w0 * g0[6] as f32,
-                    s2 * w1 * g0[7] as f32,
-                    s2 * w2 * g0[8] as f32,
-                );
-                let g1 = dot3x3::<K>(a3, a4, a5, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r3[j..],
-                    s3 * w0 * g1[0] as f32,
-                    s3 * w1 * g1[1] as f32,
-                    s3 * w2 * g1[2] as f32,
-                );
-                put3::<ACC>(
-                    &mut r4[j..],
-                    s4 * w0 * g1[3] as f32,
-                    s4 * w1 * g1[4] as f32,
-                    s4 * w2 * g1[5] as f32,
-                );
-                put3::<ACC>(
-                    &mut r5[j..],
-                    s5 * w0 * g1[6] as f32,
-                    s5 * w1 * g1[7] as f32,
-                    s5 * w2 * g1[8] as f32,
-                );
-                let (d0, d1, d2) = dot3::<K>(a6, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r6[j..],
-                    s6 * w0 * d0 as f32,
-                    s6 * w1 * d1 as f32,
-                    s6 * w2 * d2 as f32,
-                );
-                let (d0, d1, d2) = dot3::<K>(a7, b0, b1, b2);
-                put3::<ACC>(
-                    &mut r7[j..],
-                    s7 * w0 * d0 as f32,
-                    s7 * w1 * d1 as f32,
-                    s7 * w2 * d2 as f32,
-                );
-                j += 3;
-            }
-            while j < n {
-                let b0 = &w[j * K..j * K + K];
-                let w0 = w_scale[j];
-                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
-                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
-                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
-                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
-                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
-                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
-                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
-                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
-                put::<ACC>(&mut r0[j..], v0);
-                put::<ACC>(&mut r1[j..], v1);
-                put::<ACC>(&mut r2[j..], v2);
-                put::<ACC>(&mut r3[j..], v3);
-                put::<ACC>(&mut r4[j..], v4);
-                put::<ACC>(&mut r5[j..], v5);
-                put::<ACC>(&mut r6[j..], v6);
-                put::<ACC>(&mut r7[j..], v7);
-                j += 1;
-            }
-        } else {
-            while j + 2 <= n {
-                let b0 = &w[j * K..j * K + K];
-                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
-                let w0 = w_scale[j];
-                let w1 = w_scale[j + 1];
-                let (d0, d1) = dot2::<K>(a0, b0, b1);
-                pair::<ACC>(&mut r0[..], j, s0 * w0 * d0 as f32, s0 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a1, b0, b1);
-                pair::<ACC>(&mut r1[..], j, s1 * w0 * d0 as f32, s1 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a2, b0, b1);
-                pair::<ACC>(&mut r2[..], j, s2 * w0 * d0 as f32, s2 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a3, b0, b1);
-                pair::<ACC>(&mut r3[..], j, s3 * w0 * d0 as f32, s3 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a4, b0, b1);
-                pair::<ACC>(&mut r4[..], j, s4 * w0 * d0 as f32, s4 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a5, b0, b1);
-                pair::<ACC>(&mut r5[..], j, s5 * w0 * d0 as f32, s5 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a6, b0, b1);
-                pair::<ACC>(&mut r6[..], j, s6 * w0 * d0 as f32, s6 * w1 * d1 as f32);
-                let (d0, d1) = dot2::<K>(a7, b0, b1);
-                pair::<ACC>(&mut r7[..], j, s7 * w0 * d0 as f32, s7 * w1 * d1 as f32);
-                j += 2;
-            }
-            while j < n {
-                let b0 = &w[j * K..j * K + K];
-                let w0 = w_scale[j];
-                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
-                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
-                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
-                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
-                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
-                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
-                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
-                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
-                put::<ACC>(&mut r0[j..], v0);
-                put::<ACC>(&mut r1[j..], v1);
-                put::<ACC>(&mut r2[j..], v2);
-                put::<ACC>(&mut r3[j..], v3);
-                put::<ACC>(&mut r4[j..], v4);
-                put::<ACC>(&mut r5[j..], v5);
-                put::<ACC>(&mut r6[j..], v6);
-                put::<ACC>(&mut r7[j..], v7);
-                j += 1;
-            }
-        }
-        i += R;
-    }
-    while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
-        let ar = &a[i * a_stride..i * a_stride + K];
-        let sa = a_scale[i];
-        let orow = &mut out[i * out_stride..i * out_stride + n];
-        for j in 0..n {
-            let br = &w[j * K..j * K + K];
-            let v = sa * w_scale[j] * dot::<K>(ar, br) as f32;
-            if ACC {
-                orow[j] += v;
-            } else {
-                orow[j] = v;
-            }
-        }
-        i += 1;
-    }
-}
-
-#[cfg(feature = "simd")]
 fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
     simd: S,
     a: &[i8],
@@ -790,6 +545,217 @@ fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
     }
 }
 
+#[inline(never)]
+fn gemm_nb<const K: usize, const ACC: bool>(
+    a: &[i8],
+    a_stride: usize,
+    a_scale: &[f32],
+    m: usize,
+    w: &[i8],
+    w_scale: &[f32],
+    n: usize,
+    out: &mut [f32],
+    out_stride: usize,
+    nb: usize,
+) {
+    let mut i = 0;
+    while i + R <= m && (i + R) * out_stride <= out.len() && (i + R) <= a_scale.len() {
+        let a0 = &a[i * a_stride..i * a_stride + K];
+        let a1 = &a[(i + 1) * a_stride..(i + 1) * a_stride + K];
+        let a2 = &a[(i + 2) * a_stride..(i + 2) * a_stride + K];
+        let a3 = &a[(i + 3) * a_stride..(i + 3) * a_stride + K];
+        let a4 = &a[(i + 4) * a_stride..(i + 4) * a_stride + K];
+        let a5 = &a[(i + 5) * a_stride..(i + 5) * a_stride + K];
+        let a6 = &a[(i + 6) * a_stride..(i + 6) * a_stride + K];
+        let a7 = &a[(i + 7) * a_stride..(i + 7) * a_stride + K];
+        let base = i * out_stride;
+        let (r0, rest) = out[base..].split_at_mut(out_stride);
+        let (r1, rest) = rest.split_at_mut(out_stride);
+        let (r2, rest) = rest.split_at_mut(out_stride);
+        let (r3, rest) = rest.split_at_mut(out_stride);
+        let (r4, rest) = rest.split_at_mut(out_stride);
+        let (r5, rest) = rest.split_at_mut(out_stride);
+        let (r6, rest) = rest.split_at_mut(out_stride);
+        let (r7, _) = rest.split_at_mut(out_stride);
+        let s0 = a_scale[i];
+        let s1 = a_scale[i + 1];
+        let s2 = a_scale[i + 2];
+        let s3 = a_scale[i + 3];
+        let s4 = a_scale[i + 4];
+        let s5 = a_scale[i + 5];
+        let s6 = a_scale[i + 6];
+        let s7 = a_scale[i + 7];
+        let mut j = 0;
+        if nb == 1 {
+            while j < n {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
+                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
+                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
+                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
+                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
+                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
+                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
+                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
+                put::<ACC>(&mut r0[j..], v0);
+                put::<ACC>(&mut r1[j..], v1);
+                put::<ACC>(&mut r2[j..], v2);
+                put::<ACC>(&mut r3[j..], v3);
+                put::<ACC>(&mut r4[j..], v4);
+                put::<ACC>(&mut r5[j..], v5);
+                put::<ACC>(&mut r6[j..], v6);
+                put::<ACC>(&mut r7[j..], v7);
+                j += 1;
+            }
+        } else if nb == 3 {
+            while j + 3 <= n {
+                let b0 = &w[j * K..j * K + K];
+                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
+                let b2 = &w[(j + 2) * K..(j + 2) * K + K];
+                let w0 = w_scale[j];
+                let w1 = w_scale[j + 1];
+                let w2 = w_scale[j + 2];
+                let g0 = dot3x3::<K>(a0, a1, a2, b0, b1, b2);
+                put3::<ACC>(
+                    &mut r0[j..],
+                    s0 * w0 * g0[0] as f32,
+                    s0 * w1 * g0[1] as f32,
+                    s0 * w2 * g0[2] as f32,
+                );
+                put3::<ACC>(
+                    &mut r1[j..],
+                    s1 * w0 * g0[3] as f32,
+                    s1 * w1 * g0[4] as f32,
+                    s1 * w2 * g0[5] as f32,
+                );
+                put3::<ACC>(
+                    &mut r2[j..],
+                    s2 * w0 * g0[6] as f32,
+                    s2 * w1 * g0[7] as f32,
+                    s2 * w2 * g0[8] as f32,
+                );
+                let g1 = dot3x3::<K>(a3, a4, a5, b0, b1, b2);
+                put3::<ACC>(
+                    &mut r3[j..],
+                    s3 * w0 * g1[0] as f32,
+                    s3 * w1 * g1[1] as f32,
+                    s3 * w2 * g1[2] as f32,
+                );
+                put3::<ACC>(
+                    &mut r4[j..],
+                    s4 * w0 * g1[3] as f32,
+                    s4 * w1 * g1[4] as f32,
+                    s4 * w2 * g1[5] as f32,
+                );
+                put3::<ACC>(
+                    &mut r5[j..],
+                    s5 * w0 * g1[6] as f32,
+                    s5 * w1 * g1[7] as f32,
+                    s5 * w2 * g1[8] as f32,
+                );
+                let (d0, d1, d2) = dot3::<K>(a6, b0, b1, b2);
+                put3::<ACC>(
+                    &mut r6[j..],
+                    s6 * w0 * d0 as f32,
+                    s6 * w1 * d1 as f32,
+                    s6 * w2 * d2 as f32,
+                );
+                let (d0, d1, d2) = dot3::<K>(a7, b0, b1, b2);
+                put3::<ACC>(
+                    &mut r7[j..],
+                    s7 * w0 * d0 as f32,
+                    s7 * w1 * d1 as f32,
+                    s7 * w2 * d2 as f32,
+                );
+                j += 3;
+            }
+            while j < n {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
+                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
+                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
+                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
+                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
+                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
+                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
+                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
+                put::<ACC>(&mut r0[j..], v0);
+                put::<ACC>(&mut r1[j..], v1);
+                put::<ACC>(&mut r2[j..], v2);
+                put::<ACC>(&mut r3[j..], v3);
+                put::<ACC>(&mut r4[j..], v4);
+                put::<ACC>(&mut r5[j..], v5);
+                put::<ACC>(&mut r6[j..], v6);
+                put::<ACC>(&mut r7[j..], v7);
+                j += 1;
+            }
+        } else {
+            while j + 2 <= n {
+                let b0 = &w[j * K..j * K + K];
+                let b1 = &w[(j + 1) * K..(j + 1) * K + K];
+                let w0 = w_scale[j];
+                let w1 = w_scale[j + 1];
+                let (d0, d1) = dot2::<K>(a0, b0, b1);
+                pair::<ACC>(&mut r0[..], j, s0 * w0 * d0 as f32, s0 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a1, b0, b1);
+                pair::<ACC>(&mut r1[..], j, s1 * w0 * d0 as f32, s1 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a2, b0, b1);
+                pair::<ACC>(&mut r2[..], j, s2 * w0 * d0 as f32, s2 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a3, b0, b1);
+                pair::<ACC>(&mut r3[..], j, s3 * w0 * d0 as f32, s3 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a4, b0, b1);
+                pair::<ACC>(&mut r4[..], j, s4 * w0 * d0 as f32, s4 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a5, b0, b1);
+                pair::<ACC>(&mut r5[..], j, s5 * w0 * d0 as f32, s5 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a6, b0, b1);
+                pair::<ACC>(&mut r6[..], j, s6 * w0 * d0 as f32, s6 * w1 * d1 as f32);
+                let (d0, d1) = dot2::<K>(a7, b0, b1);
+                pair::<ACC>(&mut r7[..], j, s7 * w0 * d0 as f32, s7 * w1 * d1 as f32);
+                j += 2;
+            }
+            while j < n {
+                let b0 = &w[j * K..j * K + K];
+                let w0 = w_scale[j];
+                let v0 = s0 * w0 * dot::<K>(a0, b0) as f32;
+                let v1 = s1 * w0 * dot::<K>(a1, b0) as f32;
+                let v2 = s2 * w0 * dot::<K>(a2, b0) as f32;
+                let v3 = s3 * w0 * dot::<K>(a3, b0) as f32;
+                let v4 = s4 * w0 * dot::<K>(a4, b0) as f32;
+                let v5 = s5 * w0 * dot::<K>(a5, b0) as f32;
+                let v6 = s6 * w0 * dot::<K>(a6, b0) as f32;
+                let v7 = s7 * w0 * dot::<K>(a7, b0) as f32;
+                put::<ACC>(&mut r0[j..], v0);
+                put::<ACC>(&mut r1[j..], v1);
+                put::<ACC>(&mut r2[j..], v2);
+                put::<ACC>(&mut r3[j..], v3);
+                put::<ACC>(&mut r4[j..], v4);
+                put::<ACC>(&mut r5[j..], v5);
+                put::<ACC>(&mut r6[j..], v6);
+                put::<ACC>(&mut r7[j..], v7);
+                j += 1;
+            }
+        }
+        i += R;
+    }
+    while i < m && (i + 1) * out_stride <= out.len() && (i + 1) <= a_scale.len() {
+        let ar = &a[i * a_stride..i * a_stride + K];
+        let sa = a_scale[i];
+        let orow = &mut out[i * out_stride..i * out_stride + n];
+        for j in 0..n {
+            let br = &w[j * K..j * K + K];
+            let v = sa * w_scale[j] * dot::<K>(ar, br) as f32;
+            if ACC {
+                orow[j] += v;
+            } else {
+                orow[j] = v;
+            }
+        }
+        i += 1;
+    }
+}
+
 #[inline(always)]
 fn put<const ACC: bool>(o: &mut [f32], v: f32) {
     if ACC {
@@ -865,7 +831,6 @@ fn dot3x3<const K: usize>(
     [s0, s1, s2, s3, s4, s5, s6, s7, s8]
 }
 
-#[cfg(feature = "simd")]
 #[inline(always)]
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
@@ -876,79 +841,16 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     b1: &[i8],
     b2: &[i8],
 ) -> [i32; 9] {
-    let mut s0 = simd.splat_i32x4(0);
-    let mut s1 = s0;
-    let mut s2 = s0;
-    let mut s3 = s0;
-    let mut s4 = s0;
-    let mut s5 = s0;
-    let mut s6 = s0;
-    let mut s7 = s0;
-    let mut s8 = s0;
+    let s0 = simd.splat_i32x4(0);
+    let s1 = s0;
+    let s2 = s0;
+    let s3 = s0;
+    let s4 = s0;
+    let s5 = s0;
+    let s6 = s0;
+    let s7 = s0;
+    let s8 = s0;
     let mut l = 0;
-    while l + 16 <= 0 {
-        let (x0, y0) = simd.widen_i8x16(i8x16::from_slice(simd, &b0[l..l + 16]));
-        let (x1, y1) = simd.widen_i8x16(i8x16::from_slice(simd, &b1[l..l + 16]));
-        let (x2, y2) = simd.widen_i8x16(i8x16::from_slice(simd, &b2[l..l + 16]));
-        let (p0, p1) = simd.widen_i8x16(i8x16::from_slice(simd, &a0[l..l + 16]));
-        let (p2, p3) = simd.widen_i8x16(i8x16::from_slice(simd, &a1[l..l + 16]));
-        let (p4, p5) = simd.widen_i8x16(i8x16::from_slice(simd, &a2[l..l + 16]));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y0));
-        s0 = simd.add_i32x4(
-            simd.add_i32x4(s0, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y1));
-        s1 = simd.add_i32x4(
-            simd.add_i32x4(s1, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p1, y2));
-        s2 = simd.add_i32x4(
-            simd.add_i32x4(s2, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y0));
-        s3 = simd.add_i32x4(
-            simd.add_i32x4(s3, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y1));
-        s4 = simd.add_i32x4(
-            simd.add_i32x4(s4, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p3, y2));
-        s5 = simd.add_i32x4(
-            simd.add_i32x4(s5, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x0));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y0));
-        s6 = simd.add_i32x4(
-            simd.add_i32x4(s6, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x1));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y1));
-        s7 = simd.add_i32x4(
-            simd.add_i32x4(s7, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x2));
-        let (t2, u2) = simd.widen_i16x8(simd.mul_i16x8(p5, y2));
-        s8 = simd.add_i32x4(
-            simd.add_i32x4(s8, t),
-            simd.add_i32x4(u, simd.add_i32x4(t2, u2)),
-        );
-        l += 16;
-    }
     let mut r = [
         s0.reduce_sum(),
         s1.reduce_sum(),
@@ -981,7 +883,6 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     r
 }
 
-#[cfg(feature = "simd")]
 #[inline(always)]
 fn dot3x2<const K: usize>(a0: &[i8], a1: &[i8], b0: &[i8], b1: &[i8], b2: &[i8]) -> [i32; 6] {
     let mut s = [0i32; 6];
@@ -1042,21 +943,16 @@ pub struct QMat {
 }
 
 impl QMat {
-    pub fn from_f32(w: &[f32], n: usize, k: usize) -> Self {
-        let mut q = vec![0i8; n * k];
-        let mut scale = vec![0.0f32; n];
-        for r in 0..n {
-            let s = &w[r * k..r * k + k];
-            scale[r] = quant_row_lsq(s, &mut q[r * k..r * k + k]);
-        }
-        Self { w: q, scale, n, k }
+    pub fn load(ckpt: &Checkpoint, name: String) -> STResult<Self> {
+        let (w, shape) = ckpt.i8(format!("{name}.w"))?;
+        let (scale, _) = ckpt.f32(format!("{name}.scale"))?;
+        Ok(Self {
+            w,
+            scale,
+            n: shape[0],
+            k: shape[1],
+        })
     }
-
-    pub fn load(name: &str) -> Self {
-        let (w, shape) = load_weight(&format!("{name}.weight"));
-        Self::from_f32(&w, shape[0], shape[1])
-    }
-
     pub fn cat(a: &Self, b: &Self) -> Self {
         let mut w = Vec::with_capacity(a.w.len() + b.w.len());
         w.extend_from_slice(&a.w);
@@ -1071,8 +967,7 @@ impl QMat {
             k: a.k,
         }
     }
-
-    pub fn run(
+    pub fn run<const MANUALSIMD: bool>(
         &self,
         a: &[i8],
         a_stride: usize,
@@ -1083,7 +978,7 @@ impl QMat {
         acc: bool,
     ) {
         match (self.k, acc) {
-            (64, true) => gemm::<64, true>(
+            (64, true) => gemm::<64, true, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,
@@ -1094,7 +989,7 @@ impl QMat {
                 out,
                 out_stride,
             ),
-            (64, false) => gemm::<64, false>(
+            (64, false) => gemm::<64, false, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,
@@ -1105,7 +1000,7 @@ impl QMat {
                 out,
                 out_stride,
             ),
-            (256, true) => gemm::<256, true>(
+            (256, true) => gemm::<256, true, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,
@@ -1116,7 +1011,7 @@ impl QMat {
                 out,
                 out_stride,
             ),
-            (256, false) => gemm::<256, false>(
+            (256, false) => gemm::<256, false, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,
@@ -1127,7 +1022,7 @@ impl QMat {
                 out,
                 out_stride,
             ),
-            (512, true) => gemm::<512, true>(
+            (512, true) => gemm::<512, true, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,
@@ -1138,7 +1033,7 @@ impl QMat {
                 out,
                 out_stride,
             ),
-            (512, false) => gemm::<512, false>(
+            (512, false) => gemm::<512, false, MANUALSIMD>(
                 a,
                 a_stride,
                 a_scale,

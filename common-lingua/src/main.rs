@@ -1,7 +1,9 @@
-use common_lingua::{LANGS, MAX_LEN, ModelFp32, encode};
+use common_lingua::{LANGS, MAX_LEN, Model, encode};
 
 fn main() {
-    let model = ModelFp32::load();
+    let mut model = Model::load(include_bytes!("./weight.safetensors")).unwrap();
+    model.tune();
+    println!("selected profile: {}", model.profile);
     let texts: Vec<String> = std::env::args().skip(1).collect();
     println!(
         "# {} languages, max_len={}, dtype=fp32, device=cpu",

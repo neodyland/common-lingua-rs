@@ -1,9 +1,9 @@
 [workspace]
-members = ["./common-lingua", "./common-lingua-macros", "./common-lingua-wasm", "./common-lingua-py"]
+members = ["./common-lingua", "./common-lingua-wasm", "./common-lingua-py"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Rust port of common lingua, a language detection model."
 license = "Apache-2.0"
@@ -13,11 +13,12 @@ keywords = ["nlp"]
 categories = ["text-processing", "internationalization", "no-std"]
 
 [workspace.dependencies]
-proc-macro2 = "1.0.107"
-syn = "3.0.9"
-quote = "1.0.47"
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
+fearless_simd = "1.2.0"
+fearless_simd_macros = "0.1.0"
+safetensors = { version = "0.8.0", default-features = false }
+web-time = "1.1.0"
 
 [profile.release]
 lto = true

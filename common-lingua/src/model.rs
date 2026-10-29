@@ -1,42 +1,47 @@
-use crate::fp32::math::{gelu, softmax_rows};
+use crate::ckpt::{Checkpoint, STResult};
+use crate::global::{
+    D, FFN, HALF, HEAD_DIM, KERNEL, MAX_LEN, N_ATTN, N_CONV, N_HEADS, NGRAM_BUCKETS, NGRAM_DIM,
+    PAD, Q_SCALE,
+};
+use crate::math::{gelu, softmax_rows};
+use crate::quant::{QMat, gemm, quant_row, quant_rows};
+use std::f32::consts::{LN_2, LOG2_E};
+use std::fmt::Display;
+#[cfg(not(feature = "wasm"))]
+use std::time::Instant;
+#[cfg(feature = "wasm")]
+use web_time::Instant;
+
+const LN_EPS: f32 = 1e-5;
 
 fn silu_fast(x: &mut [f32]) {
     for v in x.iter_mut() {
-        let d = -*v * 1.442695;
+        let d = -*v * LOG2_E;
         let nn = (d + 12582912.0) - 12582912.0;
         let rr = d - nn;
         let mut pp = 0.05550411;
-        pp = rr.mul_add(pp, 0.24022651);
-        pp = rr.mul_add(pp, 0.69314718);
+        pp = rr.mul_add(pp, 0.240_226_5);
+        pp = rr.mul_add(pp, LN_2);
         pp = rr.mul_add(pp, 1.0);
         let ni = (nn as i32).clamp(-126, 127);
         let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
         let den = 1.0 + ex;
         let r0 = f32::from_bits(0x7EF311C3 - den.to_bits());
         let r1 = r0 * (2.0 - den * r0);
-        *v = *v * r1;
+        *v *= r1;
     }
 }
-
-const LN_EPS: f32 = 1e-5;
-use crate::global::{
-    D, FFN, HALF, HEAD_DIM, KERNEL, MAX_LEN, N_ATTN, N_CONV, N_HEADS, NGRAM_BUCKETS, NGRAM_DIM,
-    PAD, Q_SCALE,
-};
-use crate::int8::quant::{QMat, gemm, quant_row, quant_rows};
-use crate::weights::load_weight;
-
 struct Norm {
     weight: Vec<f32>,
     bias: Vec<f32>,
 }
 
 impl Norm {
-    fn load(name: &str) -> Self {
-        Self {
-            weight: load_weight(&format!("{name}.weight")).0,
-            bias: load_weight(&format!("{name}.bias")).0,
-        }
+    fn load(ckpt: &Checkpoint, prefix: String) -> STResult<Self> {
+        Ok(Self {
+            weight: ckpt.f32(format!("{prefix}.weight"))?.0,
+            bias: ckpt.f32(format!("{prefix}.bias"))?.0,
+        })
     }
 
     fn ln(&self, src: &[f32], dst: &mut [f32], start: usize, end: usize) {
@@ -129,14 +134,14 @@ struct Ffn {
 }
 
 impl Ffn {
-    fn load(prefix: &str) -> Self {
-        Self {
+    fn load(ckpt: &Checkpoint, prefix: String) -> STResult<Self> {
+        Ok(Self {
             upgate: QMat::cat(
-                &QMat::load(&format!("{prefix}.ffn_gate")),
-                &QMat::load(&format!("{prefix}.ffn_up")),
+                &QMat::load(ckpt, format!("{prefix}.ffn_gate"))?,
+                &QMat::load(ckpt, format!("{prefix}.ffn_up"))?,
             ),
-            down: QMat::load(&format!("{prefix}.ffn_down")),
-        }
+            down: QMat::load(ckpt, format!("{prefix}.ffn_down"))?,
+        })
     }
 }
 
@@ -149,8 +154,8 @@ struct ConvLayer {
 }
 
 impl ConvLayer {
-    fn load(prefix: &str) -> Self {
-        let (weight, shape) = load_weight(&format!("{prefix}.conv.weight"));
+    fn load(ckpt: &Checkpoint, prefix: String) -> STResult<Self> {
+        let (weight, shape) = ckpt.f32(format!("{prefix}.conv.weight"))?;
         let out = shape[0];
         let kernel = *shape.last().unwrap();
         let mut conv_weight = vec![0.0f32; out * kernel];
@@ -159,13 +164,13 @@ impl ConvLayer {
                 conv_weight[k * out + o] = weight[o * kernel + k];
             }
         }
-        Self {
-            norm1: Norm::load(&format!("{prefix}.norm1")),
+        Ok(Self {
+            norm1: Norm::load(ckpt, format!("{prefix}.norm1"))?,
             conv_weight,
-            conv_bias: load_weight(&format!("{prefix}.conv.bias")).0,
-            norm2: Norm::load(&format!("{prefix}.norm2")),
-            ffn: Ffn::load(prefix),
-        }
+            conv_bias: ckpt.f32(format!("{prefix}.conv.bias"))?.0,
+            norm2: Norm::load(ckpt, format!("{prefix}.norm2"))?,
+            ffn: Ffn::load(ckpt, prefix)?,
+        })
     }
 }
 
@@ -178,14 +183,14 @@ struct AttnLayer {
 }
 
 impl AttnLayer {
-    fn load(prefix: &str) -> Self {
-        Self {
-            norm1: Norm::load(&format!("{prefix}.norm1")),
-            qkv: QMat::load(&format!("{prefix}.qkv")),
-            out_proj: QMat::load(&format!("{prefix}.out_proj")),
-            norm2: Norm::load(&format!("{prefix}.norm2")),
-            ffn: Ffn::load(prefix),
-        }
+    fn load(ckpt: &Checkpoint, prefix: String) -> STResult<Self> {
+        Ok(Self {
+            norm1: Norm::load(ckpt, format!("{prefix}.norm1"))?,
+            qkv: QMat::load(ckpt, format!("{prefix}.qkv"))?,
+            out_proj: QMat::load(ckpt, format!("{prefix}.out_proj"))?,
+            norm2: Norm::load(ckpt, format!("{prefix}.norm2"))?,
+            ffn: Ffn::load(ckpt, prefix)?,
+        })
     }
 }
 
@@ -266,13 +271,13 @@ impl Scratch {
         );
     }
 
-    fn ffn(&mut self, ffn: &Ffn, start: usize, end: usize) {
+    fn ffn<const MANUALSIMD: bool>(&mut self, ffn: &Ffn, start: usize, end: usize) {
         if start >= end {
             return;
         }
         let len = end - start;
         let n = ffn.upgate.n;
-        ffn.upgate.run(
+        ffn.upgate.run::<MANUALSIMD>(
             &self.hq[start * D..],
             D,
             &self.hs[start..],
@@ -287,12 +292,12 @@ impl Scratch {
             let (gate, rest) = self.buf[base..base + n].split_at_mut(half);
             for (g, u) in gate.iter_mut().zip(rest[..half].iter()) {
                 let x = *g;
-                let d = -x * 1.442695;
+                let d = -x * LOG2_E;
                 let nn = (d + 12582912.0) - 12582912.0;
                 let rr = d - nn;
                 let mut pp = 0.05550411;
-                pp = rr.mul_add(pp, 0.24022651);
-                pp = rr.mul_add(pp, 0.69314718);
+                pp = rr.mul_add(pp, 0.240_226_5);
+                pp = rr.mul_add(pp, LN_2);
                 pp = rr.mul_add(pp, 1.0);
                 let ni = (nn as i32).clamp(-126, 127);
                 let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
@@ -301,7 +306,7 @@ impl Scratch {
             let gq = &mut self.bufq[(start + r) * half..(start + r) * half + half];
             self.bufs[start + r] = quant_row(&self.buf[base..base + half], gq);
         }
-        ffn.down.run(
+        ffn.down.run::<MANUALSIMD>(
             &self.bufq[start * half..],
             half,
             &self.bufs[start..],
@@ -338,7 +343,7 @@ impl Scratch {
             }
         }
     }
-    fn conv_forward(&mut self, layer: &ConvLayer, stable: usize) -> usize {
+    fn conv_forward<const MANUALSIMD: bool>(&mut self, layer: &ConvLayer, stable: usize) -> usize {
         let r = if stable >= 510 { 510 } else { stable + 14 };
         if r + 1 >= 496 {
             layer.norm1.ln(&self.x, &mut self.h, 0, MAX_LEN);
@@ -375,13 +380,13 @@ impl Scratch {
 
         if r >= 510 {
             self.norm_q(&layer.norm2, 0, MAX_LEN);
-            self.ffn(&layer.ffn, 0, MAX_LEN);
+            self.ffn::<MANUALSIMD>(&layer.ffn, 0, MAX_LEN);
             return 510;
         }
         self.norm_q(&layer.norm2, 0, r + 1);
         self.norm_q(&layer.norm2, 510, MAX_LEN);
-        self.ffn(&layer.ffn, 0, r + 1);
-        self.ffn(&layer.ffn, 510, MAX_LEN);
+        self.ffn::<MANUALSIMD>(&layer.ffn, 0, r + 1);
+        self.ffn::<MANUALSIMD>(&layer.ffn, 510, MAX_LEN);
         for pos in r + 1..510 {
             self.x.copy_within(r * D..r * D + D, pos * D);
         }
@@ -405,9 +410,9 @@ impl Scratch {
                 c += 4;
             }
             let mut mx = m4[0];
-            for t in 1..4 {
-                if m4[t] > mx {
-                    mx = m4[t];
+            for m4_t in m4.iter().skip(1) {
+                if *m4_t > mx {
+                    mx = *m4_t;
                 }
             }
             let mut s4 = [0.0f32; 4];
@@ -415,11 +420,11 @@ impl Scratch {
             while c + 4 <= MAX_LEN {
                 for t in 0..4 {
                     let v = row[c + t];
-                    let d = (v - mx) * 1.442695;
+                    let d = (v - mx) * LOG2_E;
                     let nn = (d + 12582912.0) - 12582912.0;
                     let rr = d - nn;
-                    let mut pp = 0.24022651;
-                    pp = rr.mul_add(pp, 0.69314718);
+                    let mut pp = 0.240_226_5;
+                    pp = rr.mul_add(pp, LN_2);
                     pp = rr.mul_add(pp, 1.0);
                     let ni = (nn as i32).clamp(-126, 127);
                     let e = pp * f32::from_bits(((ni + 127) as u32) << 23);
@@ -472,7 +477,13 @@ impl Scratch {
             }
         }
     }
-    fn attn_forward(&mut self, layer: &AttnLayer, rope: &Rope, stable: usize, rows: usize) {
+    fn attn_forward<const MANUALSIMD: bool>(
+        &mut self,
+        layer: &AttnLayer,
+        rope: &Rope,
+        stable: usize,
+        rows: usize,
+    ) {
         let cut = if stable >= 509 { 510 } else { stable + 1 };
         if cut >= 510 {
             layer.norm1.ln(&self.x, &mut self.h, 0, MAX_LEN);
@@ -482,9 +493,15 @@ impl Scratch {
         }
         if cut >= 510 {
             quant_rows(&self.h, D, &mut self.hq, D, &mut self.hs, MAX_LEN, D);
-            layer
-                .qkv
-                .run(&self.hq, D, &self.hs, MAX_LEN, &mut self.qkv, 3 * D, false);
+            layer.qkv.run::<MANUALSIMD>(
+                &self.hq,
+                D,
+                &self.hs,
+                MAX_LEN,
+                &mut self.qkv,
+                3 * D,
+                false,
+            );
         } else {
             quant_rows(
                 &self.h[0..cut * D],
@@ -495,7 +512,7 @@ impl Scratch {
                 cut,
                 D,
             );
-            layer.qkv.run(
+            layer.qkv.run::<MANUALSIMD>(
                 &self.hq[0..cut * D],
                 D,
                 &self.hs[0..cut],
@@ -513,7 +530,7 @@ impl Scratch {
                 2,
                 D,
             );
-            layer.qkv.run(
+            layer.qkv.run::<MANUALSIMD>(
                 &self.hq[510 * D..],
                 D,
                 &self.hs[510..],
@@ -549,7 +566,7 @@ impl Scratch {
             while rb < rows {
                 let rend = if rb + 64 < rows { rb + 64 } else { rows };
                 let rlen = rend - rb;
-                gemm::<HEAD_DIM, false>(
+                gemm::<HEAD_DIM, false, MANUALSIMD>(
                     &self.qq[rb * HEAD_DIM..],
                     HEAD_DIM,
                     &self.qs[rb..],
@@ -564,7 +581,7 @@ impl Scratch {
                 rb = rend;
             }
             self.quant_v(voff);
-            gemm::<MAX_LEN, false>(
+            gemm::<MAX_LEN, false, MANUALSIMD>(
                 &self.sq,
                 MAX_LEN,
                 &self.ss,
@@ -580,16 +597,36 @@ impl Scratch {
         quant_rows(&self.attn, D, &mut self.aq, D, &mut self.asc, rows, D);
         layer
             .out_proj
-            .run(&self.aq, D, &self.asc, rows, &mut self.x, D, true);
+            .run::<MANUALSIMD>(&self.aq, D, &self.asc, rows, &mut self.x, D, true);
 
         self.norm_q(&layer.norm2, 0, rows);
-        self.ffn(&layer.ffn, 0, rows);
+        self.ffn::<MANUALSIMD>(&layer.ffn, 0, rows);
     }
 }
 
 impl Default for Scratch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct Profile {
+    pub manual_simd: bool,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self { manual_simd: true }
+    }
+}
+
+impl Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "simd_mode: {}",
+            if self.manual_simd { "manual" } else { "auto" }
+        )
     }
 }
 
@@ -605,30 +642,55 @@ pub struct Model {
     head0_bias: Vec<f32>,
     head3w: Vec<f32>,
     head3_bias: Vec<f32>,
+    pub profile: Profile,
 }
 
 impl Model {
-    pub fn load() -> Self {
+    pub fn load(b: &[u8]) -> STResult<Self> {
+        let ckpt = Checkpoint::from_bytes(b)?;
         let mut conv_layers = Vec::with_capacity(N_CONV);
         for i in 0..N_CONV {
-            conv_layers.push(ConvLayer::load(&format!("conv_layers.{i}")));
+            conv_layers.push(ConvLayer::load(&ckpt, format!("conv_layers.{i}"))?);
         }
         let mut attn_layers = Vec::with_capacity(N_ATTN);
         for i in 0..N_ATTN {
-            attn_layers.push(AttnLayer::load(&format!("attn_layers.{i}")));
+            attn_layers.push(AttnLayer::load(&ckpt, format!("attn_layers.{i}"))?);
         }
-        Self {
-            embed: load_weight("embed.weight").0,
-            ngram_embed: load_weight("ngram_embed.embed.weight").0,
-            ngram_proj: QMat::load("ngram_proj"),
+        Ok(Self {
+            embed: ckpt.f32("embed.weight".to_string())?.0,
+            ngram_embed: ckpt.f32("ngram_embed.embed.weight".to_string())?.0,
+            ngram_proj: QMat::load(&ckpt, "ngram_proj".to_string())?,
             conv_layers,
             attn_layers,
             rope: Rope::load(),
-            final_norm: Norm::load("final_norm"),
-            head0w: load_weight("head.0.weight").0,
-            head0_bias: load_weight("head.0.bias").0,
-            head3w: load_weight("head.3.weight").0,
-            head3_bias: load_weight("head.3.bias").0,
+            final_norm: Norm::load(&ckpt, "final_norm".to_string())?,
+            head0w: ckpt.f32("head.0.weight".to_string())?.0,
+            head0_bias: ckpt.f32("head.0.bias".to_string())?.0,
+            head3w: ckpt.f32("head.3.weight".to_string())?.0,
+            head3_bias: ckpt.f32("head.3.bias".to_string())?.0,
+            profile: Profile::default(),
+        })
+    }
+    pub fn tune(&mut self) {
+        let mut ids = vec![PAD; MAX_LEN];
+        ids[0] = 0;
+        ids[0] = 1;
+        ids[0] = 2;
+        ids[0] = 3;
+        self.profile.manual_simd = true;
+        let now = Instant::now();
+        for _ in 0..10 {
+            self.predict(&ids);
+        }
+        let ms_manual = now.elapsed().as_millis();
+        self.profile.manual_simd = false;
+        let now = Instant::now();
+        for _ in 0..10 {
+            self.predict(&ids);
+        }
+        let ms_auto = now.elapsed().as_millis();
+        if ms_auto < ms_manual {
+            self.profile.manual_simd = false;
         }
     }
 
@@ -653,7 +715,11 @@ impl Model {
         }
     }
 
-    pub fn predict_with(&self, byte_ids: &[usize], s: &mut Scratch) -> Vec<f32> {
+    pub fn predict_with<const MANUALSIMD: bool>(
+        &self,
+        byte_ids: &[usize],
+        s: &mut Scratch,
+    ) -> Vec<f32> {
         let rows = byte_ids
             .iter()
             .rposition(|&id| id != PAD)
@@ -666,13 +732,11 @@ impl Model {
         let full = rows >= 510;
         let stop = if full { MAX_LEN } else { rows + 1 };
 
-        for pos in 0..stop {
-            let id = byte_ids[pos];
+        for (pos, id) in byte_ids.iter().enumerate().take(stop) {
             s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
         }
         if !full {
-            for pos in 510..MAX_LEN {
-                let id = byte_ids[pos];
+            for (pos, id) in byte_ids.iter().enumerate().take(MAX_LEN).skip(510) {
                 s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
             }
         }
@@ -684,7 +748,7 @@ impl Model {
             &s.ngram, NGRAM_DIM, &mut s.nq, NGRAM_DIM, &mut s.ns, stop, NGRAM_DIM,
         );
         self.ngram_proj
-            .run(&s.nq, NGRAM_DIM, &s.ns, stop, &mut s.x, D, true);
+            .run::<MANUALSIMD>(&s.nq, NGRAM_DIM, &s.ns, stop, &mut s.x, D, true);
         if !full {
             quant_rows(
                 &s.ngram[510 * NGRAM_DIM..],
@@ -695,7 +759,7 @@ impl Model {
                 2,
                 NGRAM_DIM,
             );
-            self.ngram_proj.run(
+            self.ngram_proj.run::<MANUALSIMD>(
                 &s.nq[510 * NGRAM_DIM..],
                 NGRAM_DIM,
                 &s.ns[510..],
@@ -711,10 +775,10 @@ impl Model {
 
         let mut stable = rows.min(510);
         for layer in &self.conv_layers {
-            stable = s.conv_forward(layer, stable);
+            stable = s.conv_forward::<MANUALSIMD>(layer, stable);
         }
         for layer in &self.attn_layers {
-            s.attn_forward(layer, &self.rope, stable, rows);
+            s.attn_forward::<MANUALSIMD>(layer, &self.rope, stable, rows);
         }
         self.final_norm.ln(&s.x, &mut s.h, 0, rows);
 
@@ -738,7 +802,11 @@ impl Model {
 
     pub fn predict(&self, byte_ids: &[usize]) -> Vec<f32> {
         let mut s = Scratch::new();
-        self.predict_with(byte_ids, &mut s)
+        if self.profile.manual_simd {
+            self.predict_with::<true>(byte_ids, &mut s)
+        } else {
+            self.predict_with::<false>(byte_ids, &mut s)
+        }
     }
 
     fn head(&self, s: &mut Scratch) -> Vec<f32> {
@@ -751,13 +819,13 @@ impl Model {
             s.hid[o] = gelu(acc);
         }
         let mut logits = vec![0.0f32; n3];
-        for j in 0..n3 {
+        for (j, logit) in logits.iter_mut().enumerate().take(n3) {
             let mut acc = self.head3_bias[j];
             let row = &self.head3w[j * D..j * D + D];
-            for l in 0..D {
-                acc = row[l].mul_add(s.hid[l], acc);
+            for (l, r) in row.iter().enumerate().take(D) {
+                acc = r.mul_add(s.hid[l], acc);
             }
-            logits[j] = acc;
+            *logit = acc;
         }
         softmax_rows(&mut logits, n3);
         logits

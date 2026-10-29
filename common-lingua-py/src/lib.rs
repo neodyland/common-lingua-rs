@@ -1,26 +1,32 @@
-use ::common_lingua::ModelFp32;
 use pyo3::prelude::*;
-
-use std::sync::OnceLock;
-static INIT: OnceLock<ModelFp32> = OnceLock::new();
 
 /// Fast common lingua inference library
 #[pymodule]
 mod common_lingua {
     use std::collections::HashMap;
 
-    use super::INIT;
-    use ::common_lingua::{LANGS, ModelFp32, encode};
+    use ::common_lingua::{LANGS, Model as RModel, encode};
     use pyo3::prelude::*;
 
-    /// detect the string's language
-    #[pyfunction]
-    fn detect(s: &str) -> HashMap<String, f32> {
-        let model = INIT.get_or_init(ModelFp32::load);
-        let mut map = HashMap::new();
-        for (k, v) in model.predict(&encode(s)).into_iter().enumerate() {
-            map.insert(LANGS[k].to_string(), v);
+    #[pyclass]
+    struct Model(RModel);
+
+    #[pymethods]
+    impl Model {
+        #[new]
+        fn new() -> Self {
+            let mut model =
+                RModel::load(include_bytes!("../../common-lingua/src/weight.safetensors")).unwrap();
+            model.tune();
+            Model(model)
         }
-        map
+
+        fn detect(&self, s: &str) -> HashMap<String, f32> {
+            let mut map = HashMap::new();
+            for (k, v) in self.0.predict(&encode(s)).into_iter().enumerate() {
+                map.insert(LANGS[k].to_string(), v);
+            }
+            map
+        }
     }
 }
