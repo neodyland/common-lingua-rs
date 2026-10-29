@@ -472,7 +472,6 @@ impl Scratch {
             }
         }
     }
-
     fn attn_forward(&mut self, layer: &AttnLayer, rope: &Rope, stable: usize, rows: usize) {
         let cut = if stable >= 509 { 510 } else { stable + 1 };
         if cut >= 510 {

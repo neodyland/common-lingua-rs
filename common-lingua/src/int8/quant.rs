@@ -880,7 +880,7 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     let mut s7 = s0;
     let mut s8 = s0;
     let mut l = 0;
-    while l + 16 <= 0 {
+    while l + 16 <= K {
         let (x0, y0) = simd.widen_i8x16(i8x16::from_slice(simd, &b0[l..l + 16]));
         let (x1, y1) = simd.widen_i8x16(i8x16::from_slice(simd, &b1[l..l + 16]));
         let (x2, y2) = simd.widen_i8x16(i8x16::from_slice(simd, &b2[l..l + 16]));
