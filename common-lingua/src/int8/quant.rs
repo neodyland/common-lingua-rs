@@ -815,6 +815,12 @@ fn dot3x3<const K: usize>(
 }
 
 #[inline(always)]
+fn keep<S: fearless_simd::Simd>(simd: S, s: &mut fearless_simd::i32x4<S>, t: fearless_simd::i16x8<S>) {
+    let (lo, hi) = simd.widen_i16x8(t);
+    *s = simd.add_i32x4(simd.add_i32x4(*s, lo), hi);
+}
+
+#[inline(always)]
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
     a0: &[i8],
@@ -841,39 +847,24 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
         let vb0 = i8x16::from_slice(simd, &b0[l..l + 16]);
         let vb1 = i8x16::from_slice(simd, &b1[l..l + 16]);
         let vb2 = i8x16::from_slice(simd, &b2[l..l + 16]);
-        let (p0, p1) = simd.widen_i8x16(va0);
-        let (p2, p3) = simd.widen_i8x16(va1);
-        let (p4, p5) = simd.widen_i8x16(va2);
-        let (x0, y0) = simd.widen_i8x16(vb0);
-        let (x1, y1) = simd.widen_i8x16(vb1);
-        let (x2, y2) = simd.widen_i8x16(vb2);
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x0));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p1, y0));
-        s0 = simd.add_i32x4(simd.add_i32x4(s0, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x1));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p1, y1));
-        s1 = simd.add_i32x4(simd.add_i32x4(s1, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p0, x2));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p1, y2));
-        s2 = simd.add_i32x4(simd.add_i32x4(s2, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x0));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p3, y0));
-        s3 = simd.add_i32x4(simd.add_i32x4(s3, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x1));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p3, y1));
-        s4 = simd.add_i32x4(simd.add_i32x4(s4, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p2, x2));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p3, y2));
-        s5 = simd.add_i32x4(simd.add_i32x4(s5, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x0));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p5, y0));
-        s6 = simd.add_i32x4(simd.add_i32x4(s6, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x1));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p5, y1));
-        s7 = simd.add_i32x4(simd.add_i32x4(s7, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
-        let (t, u) = simd.widen_i16x8(simd.mul_i16x8(p4, x2));
-        let (ta, ua) = simd.widen_i16x8(simd.mul_i16x8(p5, y2));
-        s8 = simd.add_i32x4(simd.add_i32x4(s8, t), simd.add_i32x4(u, simd.add_i32x4(ta, ua)));
+        let (m00, m01) = simd.widening_mul_i8x16(va0, vb0);
+        let (m02, m03) = simd.widening_mul_i8x16(va0, vb1);
+        let (m04, m05) = simd.widening_mul_i8x16(va0, vb2);
+        let (m10, m11) = simd.widening_mul_i8x16(va1, vb0);
+        let (m12, m13) = simd.widening_mul_i8x16(va1, vb1);
+        let (m14, m15) = simd.widening_mul_i8x16(va1, vb2);
+        let (m20, m21) = simd.widening_mul_i8x16(va2, vb0);
+        let (m22, m23) = simd.widening_mul_i8x16(va2, vb1);
+        let (m24, m25) = simd.widening_mul_i8x16(va2, vb2);
+        keep::<S>(simd, &mut s0, simd.add_i16x8(m00, m01));
+        keep::<S>(simd, &mut s1, simd.add_i16x8(m02, m03));
+        keep::<S>(simd, &mut s2, simd.add_i16x8(m04, m05));
+        keep::<S>(simd, &mut s3, simd.add_i16x8(m10, m11));
+        keep::<S>(simd, &mut s4, simd.add_i16x8(m12, m13));
+        keep::<S>(simd, &mut s5, simd.add_i16x8(m14, m15));
+        keep::<S>(simd, &mut s6, simd.add_i16x8(m20, m21));
+        keep::<S>(simd, &mut s7, simd.add_i16x8(m22, m23));
+        keep::<S>(simd, &mut s8, simd.add_i16x8(m24, m25));
         l += 16;
     }
     let mut r = [
