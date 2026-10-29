@@ -1,7 +1,6 @@
 use crate::fp32::math::{gelu, softmax_rows};
 
-fn silu_fast(x: &mut [f32]) {
-    for v in x.iter_mut() {
+fn silu_fast(x: &mut [f32]) {    for v in x.iter_mut() {
         let d = -*v * 1.442695;
         let nn = (d + 12582912.0) - 12582912.0;
         let rr = d - nn;

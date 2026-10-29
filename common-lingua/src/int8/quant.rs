@@ -139,11 +139,10 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out: &mut [f32],
     out_stride: usize,
 ) {
-    let nb = 3;
     if K >= 256 {
         gemm_jb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, JB_LOCK);
     } else {
-        gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, nb);
+        gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 3);
     }
 }
 
@@ -218,18 +217,14 @@ fn gemm_nb<const K: usize, const ACC: bool>(
                 let w0 = w_scale[j];
                 let w1 = w_scale[j + 1];
                 let w2 = w_scale[j + 2];
-                let (d0, d1, d2) = dot3::<K>(a0, b0, b1, b2);
-                put3::<ACC>(&mut r0[j..], s0 * w0 * d0 as f32, s0 * w1 * d1 as f32, s0 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a1, b0, b1, b2);
-                put3::<ACC>(&mut r1[j..], s1 * w0 * d0 as f32, s1 * w1 * d1 as f32, s1 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a2, b0, b1, b2);
-                put3::<ACC>(&mut r2[j..], s2 * w0 * d0 as f32, s2 * w1 * d1 as f32, s2 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a3, b0, b1, b2);
-                put3::<ACC>(&mut r3[j..], s3 * w0 * d0 as f32, s3 * w1 * d1 as f32, s3 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a4, b0, b1, b2);
-                put3::<ACC>(&mut r4[j..], s4 * w0 * d0 as f32, s4 * w1 * d1 as f32, s4 * w2 * d2 as f32);
-                let (d0, d1, d2) = dot3::<K>(a5, b0, b1, b2);
-                put3::<ACC>(&mut r5[j..], s5 * w0 * d0 as f32, s5 * w1 * d1 as f32, s5 * w2 * d2 as f32);
+                let g0 = dot3x3::<K>(a0, a1, a2, b0, b1, b2);
+                put3::<ACC>(&mut r0[j..], s0 * w0 * g0[0] as f32, s0 * w1 * g0[1] as f32, s0 * w2 * g0[2] as f32);
+                put3::<ACC>(&mut r1[j..], s1 * w0 * g0[3] as f32, s1 * w1 * g0[4] as f32, s1 * w2 * g0[5] as f32);
+                put3::<ACC>(&mut r2[j..], s2 * w0 * g0[6] as f32, s2 * w1 * g0[7] as f32, s2 * w2 * g0[8] as f32);
+                let g1 = dot3x3::<K>(a3, a4, a5, b0, b1, b2);
+                put3::<ACC>(&mut r3[j..], s3 * w0 * g1[0] as f32, s3 * w1 * g1[1] as f32, s3 * w2 * g1[2] as f32);
+                put3::<ACC>(&mut r4[j..], s4 * w0 * g1[3] as f32, s4 * w1 * g1[4] as f32, s4 * w2 * g1[5] as f32);
+                put3::<ACC>(&mut r5[j..], s5 * w0 * g1[6] as f32, s5 * w1 * g1[7] as f32, s5 * w2 * g1[8] as f32);
                 let (d0, d1, d2) = dot3::<K>(a6, b0, b1, b2);
                 put3::<ACC>(&mut r6[j..], s6 * w0 * d0 as f32, s6 * w1 * d1 as f32, s6 * w2 * d2 as f32);
                 let (d0, d1, d2) = dot3::<K>(a7, b0, b1, b2);
@@ -548,25 +543,33 @@ fn dot3x3<const K: usize>(
     b1: &[i8],
     b2: &[i8],
 ) -> [i32; 9] {
-    let mut s = [0i32; 9];
+    let mut s0 = 0i32;
+    let mut s1 = 0i32;
+    let mut s2 = 0i32;
+    let mut s3 = 0i32;
+    let mut s4 = 0i32;
+    let mut s5 = 0i32;
+    let mut s6 = 0i32;
+    let mut s7 = 0i32;
+    let mut s8 = 0i32;
     for l in 0..K {
         let x0 = b0[l] as i32;
         let x1 = b1[l] as i32;
         let x2 = b2[l] as i32;
         let av = a0[l] as i32;
-        s[0] += av * x0;
-        s[1] += av * x1;
-        s[2] += av * x2;
+        s0 += av * x0;
+        s1 += av * x1;
+        s2 += av * x2;
         let cv = a1[l] as i32;
-        s[3] += cv * x0;
-        s[4] += cv * x1;
-        s[5] += cv * x2;
+        s3 += cv * x0;
+        s4 += cv * x1;
+        s5 += cv * x2;
         let dv = a2[l] as i32;
-        s[6] += dv * x0;
-        s[7] += dv * x1;
-        s[8] += dv * x2;
+        s6 += dv * x0;
+        s7 += dv * x1;
+        s8 += dv * x2;
     }
-    s
+    [s0, s1, s2, s3, s4, s5, s6, s7, s8]
 }
 
 #[inline(always)]
