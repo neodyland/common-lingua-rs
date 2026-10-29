@@ -1,4 +1,5 @@
 use crate::weights::load_weight;
+#[cfg(feature = "simd")]
 use fearless_simd::{SimdBase, i8x16};
 
 pub fn quant_row(src: &[f32], dst: &mut [i8]) -> f32 {
@@ -93,7 +94,9 @@ pub fn quant_row_lsq(src: &[f32], dst: &mut [i8]) -> f32 {
 }
 
 const R: usize = 8;
+#[cfg(feature = "simd")]
 const RJ: usize = 12;
+#[cfg(feature = "simd")]
 const JB_LOCK: usize = 84;
 
 #[inline(always)]
@@ -140,14 +143,15 @@ pub fn gemm<const K: usize, const ACC: bool>(
     out: &mut [f32],
     out_stride: usize,
 ) {
+    #[cfg(feature = "simd")]
     if K >= 256 {
         fearless_simd::dispatch!(
             fearless_simd::Level::new(),
             simd => gemm_jb::<K, ACC, _>(simd, a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, JB_LOCK)
         );
-    } else {
-        gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 3);
+        return;
     }
+    gemm_nb::<K, ACC>(a, a_stride, a_scale, m, w, w_scale, n, out, out_stride, 3);
 }
 
 #[inline(never)]
@@ -361,6 +365,7 @@ fn gemm_nb<const K: usize, const ACC: bool>(
     }
 }
 
+#[cfg(feature = "simd")]
 fn gemm_jb<const K: usize, const ACC: bool, S: fearless_simd::Simd>(
     simd: S,
     a: &[i8],
@@ -860,6 +865,7 @@ fn dot3x3<const K: usize>(
     [s0, s1, s2, s3, s4, s5, s6, s7, s8]
 }
 
+#[cfg(feature = "simd")]
 #[inline(always)]
 fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     simd: S,
@@ -880,7 +886,7 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     let mut s7 = s0;
     let mut s8 = s0;
     let mut l = 0;
-    while l + 16 <= K {
+    while l + 16 <= 0 {
         let (x0, y0) = simd.widen_i8x16(i8x16::from_slice(simd, &b0[l..l + 16]));
         let (x1, y1) = simd.widen_i8x16(i8x16::from_slice(simd, &b1[l..l + 16]));
         let (x2, y2) = simd.widen_i8x16(i8x16::from_slice(simd, &b2[l..l + 16]));
@@ -975,6 +981,7 @@ fn dot3x3s<S: fearless_simd::Simd, const K: usize>(
     r
 }
 
+#[cfg(feature = "simd")]
 #[inline(always)]
 fn dot3x2<const K: usize>(a0: &[i8], a1: &[i8], b0: &[i8], b1: &[i8], b2: &[i8]) -> [i32; 6] {
     let mut s = [0i32; 6];
