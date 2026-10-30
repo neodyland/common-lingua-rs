@@ -6,9 +6,9 @@ use crate::global::{
 use crate::math::{gelu, softmax_rows};
 use crate::quant::{QMat, gemm, quant_row, quant_rows};
 use fearless_simd::SimdBase;
-use std::cell::RefCell;
 use std::f32::consts::{LN_2, LOG2_E};
 use std::fmt::Display;
+use std::sync::Mutex;
 #[cfg(not(feature = "wasm"))]
 use std::time::Instant;
 #[cfg(feature = "wasm")]
@@ -126,7 +126,7 @@ fn ln_rows<S: fearless_simd::Simd>(
     start: usize,
     end: usize,
 ) {
-    use fearless_simd::{f32x4, SimdBase};
+    use fearless_simd::{SimdBase, f32x4};
     let zero = simd.splat_f32x4(0.0);
     for r in start..end {
         let base = r * D;
@@ -545,15 +545,9 @@ impl Scratch {
         }
         if cut >= 510 {
             quant_rows(&self.h, D, &mut self.hq, D, &mut self.hs, MAX_LEN, D);
-            layer.qkv.run::<MODE>(
-                &self.hq,
-                D,
-                &self.hs,
-                MAX_LEN,
-                &mut self.qkv,
-                3 * D,
-                false,
-            );
+            layer
+                .qkv
+                .run::<MODE>(&self.hq, D, &self.hs, MAX_LEN, &mut self.qkv, 3 * D, false);
         } else {
             quant_rows(
                 &self.h[0..cut * D],
@@ -699,7 +693,7 @@ pub struct Model {
     head3w: Vec<f32>,
     head3_bias: Vec<f32>,
     pub profile: Profile,
-    scratch: RefCell<Scratch>,
+    scratch: Mutex<Scratch>,
 }
 
 impl Model {
@@ -726,7 +720,7 @@ impl Model {
             head3w: ckpt.f32("head.3.weight".to_string())?.0,
             head3_bias: ckpt.f32("head.3.bias".to_string())?.0,
             profile: Profile::default(),
-            scratch: RefCell::new(Scratch::new()),
+            scratch: Mutex::new(Scratch::new()),
         })
     }
     pub fn tune(&mut self) {
@@ -781,11 +775,7 @@ impl Model {
         }
     }
 
-    pub fn predict_with<const MODE: u8>(
-        &self,
-        byte_ids: &[usize],
-        s: &mut Scratch,
-    ) -> Vec<f32> {
+    pub fn predict_with<const MODE: u8>(&self, byte_ids: &[usize], s: &mut Scratch) -> Vec<f32> {
         if byte_ids.len() != MAX_LEN {
             let mut buf = vec![PAD; MAX_LEN];
             for (dst, &src) in buf.iter_mut().zip(byte_ids.iter().take(MAX_LEN)) {
@@ -812,7 +802,7 @@ impl Model {
         if !full {
             for (pos, id) in byte_ids.iter().enumerate().take(MAX_LEN).skip(510) {
                 let e = (*id).min(PAD);
-            s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[e * D..e * D + D]);
+                s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[e * D..e * D + D]);
             }
         }
         self.ngram_into(byte_ids, 0, stop, &mut s.ngram);
@@ -886,11 +876,11 @@ impl Model {
             }
             buf.as_slice()
         };
-        let mut s = self.scratch.borrow_mut();
+        let mut scr = self.scratch.lock().unwrap();
         match self.profile.mode {
-            2 => self.predict_with::<2>(ids, &mut s),
-            1 => self.predict_with::<1>(ids, &mut s),
-            _ => self.predict_with::<0>(ids, &mut s),
+            2 => self.predict_with::<2>(ids, &mut scr),
+            1 => self.predict_with::<1>(ids, &mut scr),
+            _ => self.predict_with::<0>(ids, &mut scr),
         }
     }
 
