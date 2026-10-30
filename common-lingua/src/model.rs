@@ -421,8 +421,8 @@ impl Scratch {
                         acc[t] = wr[t].mul_add(hr[t], acc[t]);
                     }
                 }
-                for t in 0..32 {
-                    acc[t] = silu_one(acc[t]);
+                for acc_t in &mut acc {
+                    *acc_t = silu_one(*acc_t);
                 }
                 let row = &mut self.conv[pos * D + ob..pos * D + ob + 32];
                 row.copy_from_slice(&acc);
