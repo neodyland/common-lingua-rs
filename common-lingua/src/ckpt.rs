@@ -26,7 +26,7 @@ impl<'a> Checkpoint<'a> {
             scale
                 .data()
                 .iter()
-                .map(|c| i8::from_le_bytes([*c]))
+                .map(|c| i8::from_le_bytes([*c]).max(-127))
                 .collect(),
             scale.shape().to_vec(),
         ))

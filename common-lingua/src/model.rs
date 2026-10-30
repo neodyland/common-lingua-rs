@@ -5,6 +5,7 @@ use crate::global::{
 };
 use crate::math::{gelu, softmax_rows};
 use crate::quant::{QMat, gemm, quant_row, quant_rows};
+use fearless_simd::SimdBase;
 use std::cell::RefCell;
 use std::f32::consts::{LN_2, LOG2_E};
 use std::fmt::Display;
@@ -15,23 +16,83 @@ use web_time::Instant;
 
 const LN_EPS: f32 = 1e-5;
 
-fn silu_fast(x: &mut [f32]) {
-    for v in x.iter_mut() {
-        let d = -*v * LOG2_E;
-        let nn = (d + 12582912.0) - 12582912.0;
-        let rr = d - nn;
-        let mut pp = 0.05550411;
-        pp = rr.mul_add(pp, 0.240_226_5);
-        pp = rr.mul_add(pp, LN_2);
-        pp = rr.mul_add(pp, 1.0);
-        let ni = (nn as i32).clamp(-126, 127);
-        let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
-        let den = 1.0 + ex;
-        let r0 = f32::from_bits(0x7EF311C3 - den.to_bits());
-        let r1 = r0 * (2.0 - den * r0);
-        *v *= r1;
+#[inline]
+fn silu_one(v: f32) -> f32 {
+    let d = -v * LOG2_E;
+    let nn = (d + 12582912.0) - 12582912.0;
+    let rr = d - nn;
+    let mut pp = 0.05550411;
+    pp = rr.mul_add(pp, 0.240_226_5);
+    pp = rr.mul_add(pp, LN_2);
+    pp = rr.mul_add(pp, 1.0);
+    let ni = (nn as i32).clamp(-126, 127);
+    let ex = pp * f32::from_bits(((ni + 127) as u32) << 23);
+    let den = 1.0 + ex;
+    let r0 = f32::from_bits(0x7EF311C3 - den.to_bits());
+    let r1 = r0 * (2.0 - den * r0);
+    v * r1
+}
+
+fn row_max<S: fearless_simd::Simd>(simd: S, row: &[f32]) -> f32 {
+    use fearless_simd::f32x4;
+    let mut mv = simd.splat_f32x4(f32::NEG_INFINITY);
+    let mut c = 0;
+    while c + 4 <= row.len() {
+        mv = simd.max_f32x4(mv, f32x4::from_slice(simd, &row[c..c + 4]));
+        c += 4;
+    }
+    let a = mv.to_array();
+    let mut mx = a[0];
+    for t in a.iter().skip(1) {
+        if *t > mx {
+            mx = *t;
+        }
+    }
+    while c < row.len() {
+        if row[c] > mx {
+            mx = row[c];
+        }
+        c += 1;
+    }
+    mx
+}
+
+fn softmax_tile_s<S: fearless_simd::Simd>(
+    simd: S,
+    stile: &mut [f32],
+    sq: &mut [i8],
+    ss: &mut [f32],
+    rlen: usize,
+    rb: usize,
+) {
+    for r in 0..rlen {
+        let g = rb + r;
+        let row = &stile[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
+        let dst = &mut sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
+        let mx = row_max(simd, row);
+        let mut s4 = [0.0f32; 4];
+        let mut c = 0;
+        while c + 4 <= MAX_LEN {
+            for t in 0..4 {
+                let v = row[c + t];
+                let d = (v - mx) * LOG2_E;
+                let nn = (d + 12582912.0) - 12582912.0;
+                let rr = d - nn;
+                let mut pp = 0.240_226_5;
+                pp = rr.mul_add(pp, LN_2);
+                pp = rr.mul_add(pp, 1.0);
+                let ni = (nn as i32).clamp(-126, 127);
+                let e = pp * f32::from_bits(((ni + 127) as u32) << 23);
+                dst[c + t] = (e * 127.0 + 0.5) as i8;
+                s4[t] += e;
+            }
+            c += 4;
+        }
+        let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
+        ss[g] = 1.0 / (127.0 * sum);
     }
 }
+
 struct Norm {
     weight: Vec<f32>,
     bias: Vec<f32>,
@@ -49,33 +110,56 @@ impl Norm {
         if start >= end {
             return;
         }
-        for r in start..end {
-            let base = r * D;
-            let row = &src[base..base + D];
-            let out = &mut dst[base..base + D];
-            let mut a4 = [0.0f32; 4];
-            let mut c = 0;
-            while c + 4 <= D {
-                for t in 0..4 {
-                    a4[t] += row[c + t];
-                }
-                c += 4;
-            }
-            let mean = ((a4[0] + a4[1]) + (a4[2] + a4[3])) / D as f32;
-            let mut v4 = [0.0f32; 4];
-            let mut c = 0;
-            while c + 4 <= D {
-                for t in 0..4 {
-                    let diff = row[c + t] - mean;
-                    v4[t] = diff.mul_add(diff, v4[t]);
-                }
-                c += 4;
-            }
-            let var = ((v4[0] + v4[1]) + (v4[2] + v4[3])) / D as f32;
-            let inv = 1.0 / (var + LN_EPS).sqrt();
-            for i in 0..D {
-                out[i] = (row[i] - mean).mul_add(inv * self.weight[i], self.bias[i]);
-            }
+        fearless_simd::dispatch!(
+            fearless_simd::Level::new(),
+            simd => ln_rows(simd, &self.weight, &self.bias, src, dst, start, end)
+        );
+    }
+}
+
+fn ln_rows<S: fearless_simd::Simd>(
+    simd: S,
+    w: &[f32],
+    b: &[f32],
+    src: &[f32],
+    dst: &mut [f32],
+    start: usize,
+    end: usize,
+) {
+    use fearless_simd::{f32x4, SimdBase};
+    let zero = simd.splat_f32x4(0.0);
+    for r in start..end {
+        let base = r * D;
+        let row = &src[base..base + D];
+        let out = &mut dst[base..base + D];
+        let mut acc = zero;
+        let mut c = 0;
+        while c + 4 <= D {
+            acc = simd.add_f32x4(acc, f32x4::from_slice(simd, &row[c..c + 4]));
+            c += 4;
+        }
+        let a = acc.to_array();
+        let mean = ((a[0] + a[1]) + (a[2] + a[3])) / D as f32;
+        let mv = simd.splat_f32x4(mean);
+        let mut acc = zero;
+        let mut c = 0;
+        while c + 4 <= D {
+            let d = simd.sub_f32x4(f32x4::from_slice(simd, &row[c..c + 4]), mv);
+            acc = simd.mul_add_f32x4(d, d, acc);
+            c += 4;
+        }
+        let v = acc.to_array();
+        let var = ((v[0] + v[1]) + (v[2] + v[3])) / D as f32;
+        let inv = 1.0 / (var + LN_EPS).sqrt();
+        let iv = simd.splat_f32x4(inv);
+        let mut i = 0;
+        while i + 4 <= D {
+            let rv = simd.sub_f32x4(f32x4::from_slice(simd, &row[i..i + 4]), mv);
+            let wv = f32x4::from_slice(simd, &w[i..i + 4]);
+            let bv = f32x4::from_slice(simd, &b[i..i + 4]);
+            let o = simd.mul_add_f32x4(rv, simd.mul_f32x4(iv, wv), bv);
+            out[i..i + 4].copy_from_slice(&o.to_array());
+            i += 4;
         }
     }
 }
@@ -272,13 +356,13 @@ impl Scratch {
         );
     }
 
-    fn ffn<const MANUALSIMD: bool>(&mut self, ffn: &Ffn, start: usize, end: usize) {
+    fn ffn<const MODE: u8>(&mut self, ffn: &Ffn, start: usize, end: usize) {
         if start >= end {
             return;
         }
         let len = end - start;
         let n = ffn.upgate.n;
-        ffn.upgate.run::<MANUALSIMD>(
+        ffn.upgate.run::<MODE>(
             &self.hq[start * D..],
             D,
             &self.hs[start..],
@@ -307,7 +391,7 @@ impl Scratch {
             let gq = &mut self.bufq[(start + r) * half..(start + r) * half + half];
             self.bufs[start + r] = quant_row(&self.buf[base..base + half], gq);
         }
-        ffn.down.run::<MANUALSIMD>(
+        ffn.down.run::<MODE>(
             &self.bufq[start * half..],
             half,
             &self.bufs[start..],
@@ -337,14 +421,16 @@ impl Scratch {
                         acc[t] = wr[t].mul_add(hr[t], acc[t]);
                     }
                 }
-                silu_fast(&mut acc);
+                for t in 0..32 {
+                    acc[t] = silu_one(acc[t]);
+                }
                 let row = &mut self.conv[pos * D + ob..pos * D + ob + 32];
                 row.copy_from_slice(&acc);
                 ob += 32;
             }
         }
     }
-    fn conv_forward<const MANUALSIMD: bool>(&mut self, layer: &ConvLayer, stable: usize) -> usize {
+    fn conv_forward<const MODE: u8>(&mut self, layer: &ConvLayer, stable: usize) -> usize {
         let r = if stable >= 510 { 510 } else { stable + 14 };
         if r + 1 >= 496 {
             layer.norm1.ln(&self.x, &mut self.h, 0, MAX_LEN);
@@ -381,13 +467,13 @@ impl Scratch {
 
         if r >= 510 {
             self.norm_q(&layer.norm2, 0, MAX_LEN);
-            self.ffn::<MANUALSIMD>(&layer.ffn, 0, MAX_LEN);
+            self.ffn::<MODE>(&layer.ffn, 0, MAX_LEN);
             return 510;
         }
         self.norm_q(&layer.norm2, 0, r + 1);
         self.norm_q(&layer.norm2, 510, MAX_LEN);
-        self.ffn::<MANUALSIMD>(&layer.ffn, 0, r + 1);
-        self.ffn::<MANUALSIMD>(&layer.ffn, 510, MAX_LEN);
+        self.ffn::<MODE>(&layer.ffn, 0, r + 1);
+        self.ffn::<MODE>(&layer.ffn, 510, MAX_LEN);
         for pos in r + 1..510 {
             self.x.copy_within(r * D..r * D + D, pos * D);
         }
@@ -395,48 +481,13 @@ impl Scratch {
     }
 
     fn softmax_tile(&mut self, rlen: usize, rb: usize) {
-        for r in 0..rlen {
-            let g = rb + r;
-            let row = &mut self.stile[r * MAX_LEN..r * MAX_LEN + MAX_LEN];
-            let dst = &mut self.sq[g * MAX_LEN..g * MAX_LEN + MAX_LEN];
-            let mut m4 = [f32::NEG_INFINITY; 4];
-            let mut c = 0;
-            while c + 4 <= MAX_LEN {
-                for t in 0..4 {
-                    let v = row[c + t];
-                    if v > m4[t] {
-                        m4[t] = v;
-                    }
-                }
-                c += 4;
-            }
-            let mut mx = m4[0];
-            for m4_t in m4.iter().skip(1) {
-                if *m4_t > mx {
-                    mx = *m4_t;
-                }
-            }
-            let mut s4 = [0.0f32; 4];
-            let mut c = 0;
-            while c + 4 <= MAX_LEN {
-                for t in 0..4 {
-                    let v = row[c + t];
-                    let d = (v - mx) * LOG2_E;
-                    let nn = (d + 12582912.0) - 12582912.0;
-                    let rr = d - nn;
-                    let mut pp = 0.240_226_5;
-                    pp = rr.mul_add(pp, LN_2);
-                    pp = rr.mul_add(pp, 1.0);
-                    let ni = (nn as i32).clamp(-126, 127);
-                    let e = pp * f32::from_bits(((ni + 127) as u32) << 23);
-                    dst[c + t] = (e * 127.0).round() as i8;
-                    s4[t] += e;
-                }
-                c += 4;
-            }
-            let sum = (s4[0] + s4[1]) + (s4[2] + s4[3]);
-            self.ss[g] = 1.0 / (127.0 * sum);
+        if rlen == 0 {
+            return;
         }
+        fearless_simd::dispatch!(
+            fearless_simd::Level::new(),
+            simd => softmax_tile_s(simd, &mut self.stile, &mut self.sq, &mut self.ss, rlen, rb)
+        );
     }
 
     fn quant_v(&mut self, voff: usize) {
@@ -478,7 +529,7 @@ impl Scratch {
             }
         }
     }
-    fn attn_forward<const MANUALSIMD: bool>(
+    fn attn_forward<const MODE: u8>(
         &mut self,
         layer: &AttnLayer,
         rope: &Rope,
@@ -494,7 +545,7 @@ impl Scratch {
         }
         if cut >= 510 {
             quant_rows(&self.h, D, &mut self.hq, D, &mut self.hs, MAX_LEN, D);
-            layer.qkv.run::<MANUALSIMD>(
+            layer.qkv.run::<MODE>(
                 &self.hq,
                 D,
                 &self.hs,
@@ -513,7 +564,7 @@ impl Scratch {
                 cut,
                 D,
             );
-            layer.qkv.run::<MANUALSIMD>(
+            layer.qkv.run::<MODE>(
                 &self.hq[0..cut * D],
                 D,
                 &self.hs[0..cut],
@@ -531,7 +582,7 @@ impl Scratch {
                 2,
                 D,
             );
-            layer.qkv.run::<MANUALSIMD>(
+            layer.qkv.run::<MODE>(
                 &self.hq[510 * D..],
                 D,
                 &self.hs[510..],
@@ -567,7 +618,7 @@ impl Scratch {
             while rb < rows {
                 let rend = if rb + 64 < rows { rb + 64 } else { rows };
                 let rlen = rend - rb;
-                gemm::<HEAD_DIM, false, MANUALSIMD>(
+                gemm::<HEAD_DIM, false, MODE>(
                     &self.qq[rb * HEAD_DIM..],
                     HEAD_DIM,
                     &self.qs[rb..],
@@ -582,7 +633,7 @@ impl Scratch {
                 rb = rend;
             }
             self.quant_v(voff);
-            gemm::<MAX_LEN, false, MANUALSIMD>(
+            gemm::<MAX_LEN, false, MODE>(
                 &self.sq,
                 MAX_LEN,
                 &self.ss,
@@ -598,10 +649,10 @@ impl Scratch {
         quant_rows(&self.attn, D, &mut self.aq, D, &mut self.asc, rows, D);
         layer
             .out_proj
-            .run::<MANUALSIMD>(&self.aq, D, &self.asc, rows, &mut self.x, D, true);
+            .run::<MODE>(&self.aq, D, &self.asc, rows, &mut self.x, D, true);
 
         self.norm_q(&layer.norm2, 0, rows);
-        self.ffn::<MANUALSIMD>(&layer.ffn, 0, rows);
+        self.ffn::<MODE>(&layer.ffn, 0, rows);
     }
 }
 
@@ -612,12 +663,12 @@ impl Default for Scratch {
 }
 
 pub struct Profile {
-    pub manual_simd: bool,
+    pub mode: u8,
 }
 
 impl Default for Profile {
     fn default() -> Self {
-        Self { manual_simd: true }
+        Self { mode: 2 }
     }
 }
 
@@ -626,7 +677,11 @@ impl Display for Profile {
         write!(
             f,
             "simd_mode: {}",
-            if self.manual_simd { "manual" } else { "auto" }
+            match self.mode {
+                2 => "manual",
+                1 => "auto_wide",
+                _ => "auto",
+            }
         )
     }
 }
@@ -675,25 +730,34 @@ impl Model {
         })
     }
     pub fn tune(&mut self) {
-        let mut ids = vec![0usize; MAX_LEN];
-        for (pos, id) in ids.iter_mut().enumerate() {
-            *id = 65 + (pos % 26);
+        let q = &self.ngram_proj;
+        let m = 12;
+        let k = q.k;
+        let n = q.n;
+        let a = vec![1i8; m * k];
+        let sc = vec![1.0f32; m];
+        let mut out = vec![0.0f32; m * n];
+        q.run::<0>(&a, k, &sc, m, &mut out, n, false);
+        q.run::<1>(&a, k, &sc, m, &mut out, n, false);
+        q.run::<2>(&a, k, &sc, m, &mut out, n, false);
+        let mut best = 0u8;
+        let mut best_t = u128::MAX;
+        for mode in 0..3u8 {
+            let now = Instant::now();
+            for _ in 0..8 {
+                match mode {
+                    0 => q.run::<0>(&a, k, &sc, m, &mut out, n, false),
+                    1 => q.run::<1>(&a, k, &sc, m, &mut out, n, false),
+                    _ => q.run::<2>(&a, k, &sc, m, &mut out, n, false),
+                }
+            }
+            let t = now.elapsed().as_micros();
+            if t < best_t {
+                best_t = t;
+                best = mode;
+            }
         }
-        self.profile.manual_simd = true;
-        self.predict(&ids);
-        self.profile.manual_simd = false;
-        self.predict(&ids);
-        self.profile.manual_simd = true;
-        let now = Instant::now();
-        self.predict(&ids);
-        self.predict(&ids);
-        let m = now.elapsed().as_micros();
-        self.profile.manual_simd = false;
-        let now = Instant::now();
-        self.predict(&ids);
-        self.predict(&ids);
-        let a = now.elapsed().as_micros();
-        self.profile.manual_simd = m <= a;
+        self.profile.mode = best;
     }
 
     fn ngram_into(&self, byte_ids: &[usize], start: usize, end: usize, dst: &mut [f32]) {
@@ -717,11 +781,18 @@ impl Model {
         }
     }
 
-    pub fn predict_with<const MANUALSIMD: bool>(
+    pub fn predict_with<const MODE: u8>(
         &self,
         byte_ids: &[usize],
         s: &mut Scratch,
     ) -> Vec<f32> {
+        if byte_ids.len() != MAX_LEN {
+            let mut buf = vec![PAD; MAX_LEN];
+            for (dst, &src) in buf.iter_mut().zip(byte_ids.iter().take(MAX_LEN)) {
+                *dst = src;
+            }
+            return self.predict_with::<MODE>(&buf, s);
+        }
         let rows = byte_ids
             .iter()
             .rposition(|&id| id != PAD)
@@ -735,11 +806,13 @@ impl Model {
         let stop = if full { MAX_LEN } else { rows + 1 };
 
         for (pos, id) in byte_ids.iter().enumerate().take(stop) {
-            s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
+            let e = (*id).min(PAD);
+            s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[e * D..e * D + D]);
         }
         if !full {
             for (pos, id) in byte_ids.iter().enumerate().take(MAX_LEN).skip(510) {
-                s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[id * D..id * D + D]);
+                let e = (*id).min(PAD);
+            s.x[pos * D..pos * D + D].copy_from_slice(&self.embed[e * D..e * D + D]);
             }
         }
         self.ngram_into(byte_ids, 0, stop, &mut s.ngram);
@@ -750,7 +823,7 @@ impl Model {
             &s.ngram, NGRAM_DIM, &mut s.nq, NGRAM_DIM, &mut s.ns, stop, NGRAM_DIM,
         );
         self.ngram_proj
-            .run::<MANUALSIMD>(&s.nq, NGRAM_DIM, &s.ns, stop, &mut s.x, D, true);
+            .run::<MODE>(&s.nq, NGRAM_DIM, &s.ns, stop, &mut s.x, D, true);
         if !full {
             quant_rows(
                 &s.ngram[510 * NGRAM_DIM..],
@@ -761,7 +834,7 @@ impl Model {
                 2,
                 NGRAM_DIM,
             );
-            self.ngram_proj.run::<MANUALSIMD>(
+            self.ngram_proj.run::<MODE>(
                 &s.nq[510 * NGRAM_DIM..],
                 NGRAM_DIM,
                 &s.ns[510..],
@@ -777,10 +850,10 @@ impl Model {
 
         let mut stable = rows.min(510);
         for layer in &self.conv_layers {
-            stable = s.conv_forward::<MANUALSIMD>(layer, stable);
+            stable = s.conv_forward::<MODE>(layer, stable);
         }
         for layer in &self.attn_layers {
-            s.attn_forward::<MANUALSIMD>(layer, &self.rope, stable, rows);
+            s.attn_forward::<MODE>(layer, &self.rope, stable, rows);
         }
         self.final_norm.ln(&s.x, &mut s.h, 0, rows);
 
@@ -803,11 +876,21 @@ impl Model {
     }
 
     pub fn predict(&self, byte_ids: &[usize]) -> Vec<f32> {
-        let mut s = self.scratch.borrow_mut();
-        if self.profile.manual_simd {
-            self.predict_with::<true>(byte_ids, &mut s)
+        let mut buf;
+        let ids = if byte_ids.len() == MAX_LEN {
+            byte_ids
         } else {
-            self.predict_with::<false>(byte_ids, &mut s)
+            buf = vec![PAD; MAX_LEN];
+            for (dst, &src) in buf.iter_mut().zip(byte_ids.iter().take(MAX_LEN)) {
+                *dst = src;
+            }
+            buf.as_slice()
+        };
+        let mut s = self.scratch.borrow_mut();
+        match self.profile.mode {
+            2 => self.predict_with::<2>(ids, &mut s),
+            1 => self.predict_with::<1>(ids, &mut s),
+            _ => self.predict_with::<0>(ids, &mut s),
         }
     }
 
