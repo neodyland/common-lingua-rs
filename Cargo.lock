@@ -22,7 +22,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "common-lingua"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "fearless_simd",
  "fearless_simd_macros",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "common-lingua-py"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "common-lingua",
  "pyo3",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "common-lingua-wasm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "common-lingua",
  "js-sys",
