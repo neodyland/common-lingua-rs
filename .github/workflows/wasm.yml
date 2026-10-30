@@ -89,8 +89,6 @@ jobs:
       id-token: write
       contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
       - uses: pnpm/setup@v3
         with:
